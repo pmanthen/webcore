@@ -68,8 +68,12 @@ export function ProjectList({ projects }: { projects: ProjectListItem[] }) {
               {formatProjectStatus(project.status)}
             </span>
             <span className="text-[color:var(--muted)]">
-              {project._count.evaluations} eval
-              {project._count.evaluations === 1 ? "" : "s"}
+              {project._count.runs} run{project._count.runs === 1 ? "" : "s"}
+              {project._count.evaluations > 0
+                ? ` · ${project._count.evaluations} issue${
+                    project._count.evaluations === 1 ? "" : "s"
+                  }`
+                : ""}
             </span>
           </div>
         </li>

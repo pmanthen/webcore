@@ -3,10 +3,10 @@ import {
   type Action,
   type V3Options,
 } from "@browserbasehq/stagehand";
-import type { EvaluationResultPayload } from "@autonomous-ux/database";
+import type { EvaluationRunResult } from "@autonomous-ux/database";
 
 import { getEnv } from "../env.js";
-import { buildMockEvaluationResult } from "./mock-issues.js";
+import { buildMockEvaluationResult } from "./mock-findings.js";
 
 function buildStagehandOptions(): V3Options {
   const env = getEnv();
@@ -42,7 +42,8 @@ function buildStagehandOptions(): V3Options {
  */
 export async function runUxEvaluation(
   url: string,
-): Promise<EvaluationResultPayload> {
+  _context: { runId: string },
+): Promise<EvaluationRunResult> {
   const env = getEnv();
 
   if (env.UX_EVALUATION_MODE === "mock") {

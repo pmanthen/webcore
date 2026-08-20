@@ -37,7 +37,7 @@ function deriveProjectName(url: string, explicit?: string): string {
 
 async function markEnqueueFailed(
   projectId: string,
-  evaluationId: string,
+  runId: string,
   reason: string,
 ): Promise<void> {
   await prisma.$transaction([
@@ -45,13 +45,15 @@ async function markEnqueueFailed(
       where: { id: projectId },
       data: { status: "FAILED" },
     }),
-    prisma.evaluationFeedback.update({
-      where: { id: evaluationId },
+    prisma.evaluationRun.update({
+      where: { id: runId },
       data: {
+        status: "FAILED",
         summary: `Failed to enqueue evaluation: ${reason}`,
-        issues: [],
+        error: reason,
+        finishedAt: new Date(),
         rawResponse: { error: reason, phase: "enqueue" },
-        jobId: evaluationId,
+        jobId: runId,
       },
     }),
   ]);
@@ -77,7 +79,7 @@ export async function POST(request: Request) {
   const env = getEnv();
 
   let projectId: string | undefined;
-  let evaluationId: string | undefined;
+  let runId: string | undefined;
 
   try {
     const client = await prisma.client.upsert({
@@ -99,29 +101,27 @@ export async function POST(request: Request) {
         },
       });
 
-      // Pre-assign evaluation id so jobId is known before queue.add — avoids a
+      // Pre-assign the run id so jobId is known before queue.add — avoids a
       // post-enqueue DB write that could return 500 after the job already runs.
-      const nextEvaluationId = createId();
-      const evaluation = await tx.evaluationFeedback.create({
+      const nextRunId = createId();
+      const run = await tx.evaluationRun.create({
         data: {
-          id: nextEvaluationId,
+          id: nextRunId,
           projectId: project.id,
-          summary: null,
-          score: null,
-          issues: [],
-          jobId: nextEvaluationId,
+          status: "QUEUED",
+          jobId: nextRunId,
         },
       });
 
-      return { project, evaluation };
+      return { project, run };
     });
 
     projectId = result.project.id;
-    evaluationId = result.evaluation.id;
+    runId = result.run.id;
 
     const jobData: UxEvaluationJobData = {
       projectId: result.project.id,
-      evaluationId: result.evaluation.id,
+      runId: result.run.id,
       url: result.project.url,
       clientId: client.id,
     };
@@ -129,14 +129,14 @@ export async function POST(request: Request) {
     try {
       const queue = getEvaluationQueue();
       const job = await queue.add("evaluate", jobData, {
-        jobId: result.evaluation.id,
+        jobId: result.run.id,
       });
 
       return NextResponse.json(
         {
           projectId: result.project.id,
-          evaluationId: result.evaluation.id,
-          jobId: job.id ?? result.evaluation.id,
+          runId: result.run.id,
+          jobId: job.id ?? result.run.id,
           status: result.project.status,
           queue: UX_EVALUATION_QUEUE_NAME,
           url: result.project.url,
@@ -149,9 +149,9 @@ export async function POST(request: Request) {
           ? enqueueError.message
           : "Unknown enqueue error";
       console.error("[api/evaluate] enqueue failed", enqueueError);
-      await markEnqueueFailed(result.project.id, result.evaluation.id, reason);
+      await markEnqueueFailed(result.project.id, result.run.id, reason);
       return NextResponse.json(
-        { error: "Failed to enqueue evaluation", projectId, evaluationId },
+        { error: "Failed to enqueue evaluation", projectId, runId },
         { status: 500 },
       );
     }
@@ -161,7 +161,7 @@ export async function POST(request: Request) {
       {
         error: "Failed to create evaluation",
         ...(projectId ? { projectId } : {}),
-        ...(evaluationId ? { evaluationId } : {}),
+        ...(runId ? { runId } : {}),
       },
       { status: 500 },
     );
