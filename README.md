@@ -149,8 +149,17 @@ Root `.env` is loaded automatically (optional overrides in `apps/web/.env.local`
 
 - Dashboard: `/dashboard` (sidebar + project list)
 - Onboard: `/dashboard/onboard`
+- Triage: `/projects/[projectId]/results` (add `?run=<id>` to view an earlier run)
 - API: `POST /api/evaluate` — creates `Project` + `EvaluationRun`, enqueues BullMQ job on `ux-evaluation`
 - API: `GET /api/artifacts/<key>` — streams a screenshot out of the private MinIO bucket
+
+### Triage dashboard
+
+The results page shows the aggregate score as a gauge, the executive summary, and a
+severity breakdown, then a filterable grid of findings. Category and severity filters,
+free-text search, the screenshot modal, and the selector inspector are all client-side
+with `useState`/`useMemo` — no state library. Screenshots are rendered through the
+`/api/artifacts` proxy, so the MinIO bucket stays private.
 
 ## Worker (Step 4)
 
@@ -160,7 +169,13 @@ npm run db:migrate:deploy
 npm run dev:worker
 ```
 
-Default `UX_EVALUATION_MODE=mock` completes jobs with sample findings (no browser). Set `UX_EVALUATION_MODE=live` plus LLM / Browserbase keys to exercise Stagehand `observe()` / `act()`.
+Default `UX_EVALUATION_MODE=mock` completes jobs with sample findings (no browser). Set
+`UX_EVALUATION_MODE=live` plus an LLM key to run the real audit: navigate, full-page
+screenshot to MinIO, `observe()` the interactable elements, then one `extract()` per
+heuristic pillar (Accessibility, Cognitive Load, Friction) against a strict Zod schema,
+plus element crops for the findings that warrant evidence. See
+[`apps/worker/README.md`](apps/worker/README.md) for the pipeline, scoring model, and the
+`dev/` harness that runs the whole thing offline without an LLM account.
 
 The job payload on `ux-evaluation` is `{ projectId, runId, url, clientId }`, and the BullMQ
 job id equals `runId` so a run is always traceable back to its job.
@@ -171,8 +186,8 @@ job id equals `runId` so a run is always traceable back to its job.
 2. **Step 2 (done):** Prisma schema + shared types (`packages/database`)
 3. **Step 3 (done):** Next.js dashboard, onboard form, `/api/evaluate`
 4. **Step 4 (done):** BullMQ worker + Stagehand UX evaluation skeleton
-5. **Step 5 (in progress):** Core intelligence engine — MinIO artifacts, per-finding schema,
-   Stagehand `observe()` / `extract()` pipeline, triage dashboard
+5. **Step 5 (done):** Core intelligence engine — MinIO artifacts, per-finding schema,
+   Stagehand `observe()` / `extract()` heuristic pipeline, triage dashboard
 6. **Step 6:** Terraform AWS foundation (`infra/`)
 
 ## License
