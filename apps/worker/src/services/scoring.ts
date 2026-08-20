@@ -1,5 +1,6 @@
 import {
   ISSUE_CATEGORIES,
+  normalizeSeverity,
   summarizeSeverities,
   type IssueSeverity,
   type UxFinding,
@@ -23,6 +24,16 @@ const SEVERITY_PENALTY: Record<IssueSeverity, number> = {
 const PENALTY_MIDPOINT = 45;
 
 /**
+ * Penalty for a finding whose severity may not be canonical. Rows persisted
+ * before a taxonomy change, and anything an LLM invented, arrive here as plain
+ * strings; `normalizeSeverity` folds them onto the scale instead of yielding
+ * `undefined` and poisoning the sum with `NaN`.
+ */
+function penaltyFor(severity: IssueSeverity | string): number {
+  return SEVERITY_PENALTY[normalizeSeverity(severity)];
+}
+
+/**
  * Aggregate UX score from 0–100.
  *
  * Penalties are mapped through a hyperbolic curve rather than subtracted, so the
@@ -32,12 +43,16 @@ const PENALTY_MIDPOINT = 45;
  */
 export function scoreFindings(findings: readonly UxFinding[]): number {
   const penalty = findings.reduce(
-    (total, finding) => total + SEVERITY_PENALTY[finding.severity],
+    (total, finding) => total + penaltyFor(finding.severity),
     0,
   );
 
   const score = 100 / (1 + penalty / PENALTY_MIDPOINT);
-  return Math.max(0, Math.min(100, Math.round(score)));
+  // A non-finite score means the penalty sum was corrupt rather than merely
+  // large; treat that as the worst case instead of writing NaN to the run.
+  return Number.isFinite(score)
+    ? Math.max(0, Math.min(100, Math.round(score)))
+    : 0;
 }
 
 function formatCount(count: number, noun: string): string {
@@ -90,7 +105,7 @@ export function buildExecutiveSummary(
     category,
     weight: findings
       .filter((finding) => finding.category === category)
-      .reduce((total, finding) => total + SEVERITY_PENALTY[finding.severity], 0),
+      .reduce((total, finding) => total + penaltyFor(finding.severity), 0),
   })).sort((a, b) => b.weight - a.weight)[0];
 
   if (worstCategory && worstCategory.weight > 0) {
