@@ -22,11 +22,11 @@ In `live` mode, `runUxEvaluation()` performs:
 3. **Pre-flight cleanup** (deterministic, before any AI call):
    - soft `networkidle` wait (default 15s, never fails the run)
    - incremental scroll to mount lazy content, then scroll back to top
-   - fast CSS-selector cookie/popup clicks (500ms budget each)
-   - scoped Stagehand `act()` only if a large overlay still covers the viewport
+   - combined-locator cookie/popup clicks (one 500ms budget per attempt, not per selector)
+   - scoped Stagehand `act()` only if a large overlay (≥40% viewport) still covers the page (`UX_PREFLIGHT_AI_FALLBACK` defaults to `true`)
 4. **Full-page screenshot** → uploaded to MinIO as `runs/<runId>/full-page.png`, recorded on `EvaluationRun.screenshotKey`.
 5. **`observe()`** the interactable elements. These are real, resolvable selectors, and they double as the fallback when a model-proposed selector turns out not to exist.
-6. **`extract()` once per heuristic pillar**, each against a strict Zod schema:
+6. **`extract()` once per heuristic pillar**, each against a strict Zod schema. Every pillar instruction and the schema description forbid scoring cookie banners, privacy disclaimers, or chat widgets:
    | Pillar | Looks for |
    |--------|-----------|
    | Accessibility | missing alt text and labels, low contrast, divs acting as buttons, heading order |
@@ -36,7 +36,7 @@ In `live` mode, `runUxEvaluation()` performs:
 8. **Element crops.** High and medium findings with a resolved selector get a padded crop uploaded to MinIO, capped by `UX_MAX_ELEMENT_SCREENSHOTS`.
 9. **Score and summarize**, then persist everything in one Prisma transaction.
 
-A failed pillar or crop is logged and skipped — a partial audit beats none. Navigation and browser failures propagate so the run is marked `FAILED` with the error recorded on `EvaluationRun.error`.
+A failed pillar or crop is logged and skipped — a partial audit beats none. Unpassable anti-bot walls (CAPTCHA, Datadome, hard timeouts) are caught after `goto`: if the browser is still alive the worker uploads a `blocker` screenshot to MinIO, sets `EvaluationRun.status` to `FAILED_AT_BLOCKER`, and **resolves the BullMQ job successfully** so permanent IP blocks are not retried. Other infrastructure failures still propagate as `FAILED`.
 
 ### Scoring
 

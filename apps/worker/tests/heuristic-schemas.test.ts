@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   HEURISTIC_PILLARS,
+  OVERLAY_IGNORE_INSTRUCTION,
   pageOverviewSchema,
   pillarExtractionSchema,
 } from "../src/services/heuristics/schemas.js";
@@ -148,5 +149,20 @@ describe("HEURISTIC_PILLARS", () => {
     for (const pillar of HEURISTIC_PILLARS) {
       expect(pillar.instruction.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it("injects the overlay-ignore CRITICAL instruction into every pillar", () => {
+    for (const pillar of HEURISTIC_PILLARS) {
+      expect(pillar.instruction).toContain(OVERLAY_IGNORE_INSTRUCTION);
+      expect(pillar.instruction).toContain(
+        "focus ONLY on the core product/content interface",
+      );
+    }
+  });
+
+  it("describes findings as primary-DOM only in the extraction schema", () => {
+    const description = pillarExtractionSchema.shape.findings.description;
+    expect(description).toMatch(/primary product\/content DOM/i);
+    expect(description).toMatch(/cookie consent/i);
   });
 });

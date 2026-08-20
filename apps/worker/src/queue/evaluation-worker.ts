@@ -12,6 +12,10 @@ import { Redis } from "ioredis";
 import { z } from "zod";
 
 import { getEnv } from "../env.js";
+import {
+  BLOCKER_SUMMARY,
+  isEvaluationBlockedError,
+} from "../services/evaluation-blocked-error.js";
 import { runUxEvaluation } from "../services/ux-evaluation.js";
 
 const jobDataSchema = z.object({
@@ -65,6 +69,45 @@ async function markEvaluationFailed(
         error: message,
         finishedAt: new Date(),
         rawResponse: { error: message } as Prisma.InputJsonValue,
+        jobId: jobId ?? runId,
+      },
+    }),
+  ]);
+}
+
+/**
+ * Persist a CAPTCHA / anti-bot wall as business-logic failure without failing
+ * the BullMQ job (avoids endless retries on a permanent IP block).
+ */
+async function markEvaluationBlocked(
+  projectId: string,
+  runId: string,
+  jobId: string | undefined,
+  blocked: {
+    summary: string;
+    error: string;
+    screenshotKey: string | null;
+    screenshotUrl: string | null;
+    rawResponse: Record<string, unknown>;
+  },
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.evaluationFeedback.deleteMany({ where: { runId } }),
+    prisma.project.update({
+      where: { id: projectId },
+      data: { status: "FAILED" },
+    }),
+    prisma.evaluationRun.update({
+      where: { id: runId },
+      data: {
+        status: "FAILED_AT_BLOCKER",
+        summary: blocked.summary || BLOCKER_SUMMARY,
+        score: null,
+        screenshotKey: blocked.screenshotKey,
+        screenshotUrl: blocked.screenshotUrl,
+        error: blocked.error,
+        finishedAt: new Date(),
+        rawResponse: blocked.rawResponse as Prisma.InputJsonValue,
         jobId: jobId ?? runId,
       },
     }),
@@ -190,48 +233,78 @@ async function processEvaluationJob(
       }),
     ]);
 
-    const result = await runUxEvaluation(url, { runId });
+    try {
+      const result = await runUxEvaluation(url, { runId });
 
-    await prisma.$transaction([
-      // Retries re-run the audit from scratch, so clear findings from the
-      // previous attempt instead of accumulating duplicates.
-      prisma.evaluationFeedback.deleteMany({ where: { runId } }),
-      prisma.evaluationFeedback.createMany({
-        data: toFeedbackRows(result.findings, projectId, runId),
-      }),
-      prisma.evaluationRun.update({
-        where: { id: runId },
-        data: {
-          status: "COMPLETED",
-          summary: result.summary,
-          score: result.score,
-          screenshotKey: result.screenshotKey ?? null,
-          screenshotUrl: result.screenshotUrl ?? null,
-          rawResponse: (result.rawResponse ??
-            Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
-          jobId: job.id ?? runId,
-          finishedAt: new Date(),
-        },
-      }),
-      prisma.project.update({
-        where: { id: projectId },
-        data: { status: "COMPLETED" },
-      }),
-    ]);
+      await prisma.$transaction([
+        // Retries re-run the audit from scratch, so clear findings from the
+        // previous attempt instead of accumulating duplicates.
+        prisma.evaluationFeedback.deleteMany({ where: { runId } }),
+        prisma.evaluationFeedback.createMany({
+          data: toFeedbackRows(result.findings, projectId, runId),
+        }),
+        prisma.evaluationRun.update({
+          where: { id: runId },
+          data: {
+            status: "COMPLETED",
+            summary: result.summary,
+            score: result.score,
+            screenshotKey: result.screenshotKey ?? null,
+            screenshotUrl: result.screenshotUrl ?? null,
+            rawResponse: (result.rawResponse ??
+              Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
+            jobId: job.id ?? runId,
+            finishedAt: new Date(),
+          },
+        }),
+        prisma.project.update({
+          where: { id: projectId },
+          data: { status: "COMPLETED" },
+        }),
+      ]);
 
-    console.info("[worker] evaluation completed", {
-      jobId: job.id,
-      projectId,
-      findingCount: result.findings.length,
-      score: result.score,
-    });
+      console.info("[worker] evaluation completed", {
+        jobId: job.id,
+        projectId,
+        findingCount: result.findings.length,
+        score: result.score,
+      });
 
-    return {
-      projectId,
-      runId,
-      findingCount: result.findings.length,
-      score: result.score,
-    };
+      return {
+        projectId,
+        runId,
+        findingCount: result.findings.length,
+        score: result.score,
+      };
+    } catch (error) {
+      // CAPTCHA / anti-bot walls: persist FAILED_AT_BLOCKER and resolve the
+      // BullMQ job successfully so permanent blocks are not retried.
+      if (isEvaluationBlockedError(error)) {
+        await markEvaluationBlocked(projectId, runId, job.id, {
+          summary: error.message || BLOCKER_SUMMARY,
+          error: error.message,
+          screenshotKey: error.screenshotKey,
+          screenshotUrl: error.screenshotUrl,
+          rawResponse: error.rawResponse,
+        });
+
+        console.warn("[worker] evaluation blocked by anti-bot protection", {
+          jobId: job.id,
+          projectId,
+          runId,
+          screenshotKey: error.screenshotKey,
+        });
+
+        return {
+          projectId,
+          runId,
+          findingCount: 0,
+          score: null,
+        };
+      }
+
+      throw error;
+    }
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Evaluation failed";

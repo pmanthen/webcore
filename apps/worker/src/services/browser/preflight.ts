@@ -7,7 +7,8 @@ import type { StagehandPage } from "./types.js";
  * Common cookie / CMP / modal close selectors. Deterministic first — LLM only
  * as a last resort when an overlay still covers the viewport.
  *
- * Keep this list short: each miss still burns up to UX_PREFLIGHT_CLICK_TIMEOUT_MS.
+ * Matched via a single combined locator so misses share one timeout budget
+ * instead of compounding UX_PREFLIGHT_CLICK_TIMEOUT_MS per selector.
  */
 export const COOKIE_AND_POPUP_SELECTORS: readonly string[] = [
   // OneTrust / Cookiebot / TrustArc / Quantcast / Didomi / common CMPs
@@ -52,7 +53,10 @@ const AI_FALLBACK_INSTRUCTION =
   "If neither is present, do nothing.";
 
 /** Fraction of viewport area an element must cover to count as a blocking overlay. */
-const OVERLAY_COVERAGE_THRESHOLD = 0.55;
+export const OVERLAY_COVERAGE_THRESHOLD = 0.4;
+
+/** Max combined-locator dismissal passes (stacked CMP → newsletter, etc.). */
+const MAX_DISMISS_ATTEMPTS = 3;
 
 export interface PreflightOptions {
   networkIdleTimeoutMs: number;
@@ -91,7 +95,7 @@ export function preflightOptionsFromEnv(env: WorkerEnv): PreflightOptions {
  * Order matters and is intentionally cheap → expensive:
  * 1. Soft network-idle wait (never throws).
  * 2. Incremental scroll to mount lazy content, then return to top.
- * 3. Fast CSS-selector cookie/popup clicks.
+ * 3. Fast combined-locator cookie/popup clicks (one timeout budget per attempt).
  * 4. AI `act()` only if a large overlay still covers the viewport.
  */
 export async function runPreflightCleanup(
@@ -197,81 +201,84 @@ async function scrollForLazyContent(
   }
 }
 
+/**
+ * Dismiss visible cookie/CMP/modal controls with a combined CSS locator so the
+ * entire selector list shares a single click-timeout budget per attempt.
+ */
 async function dismissCookieBannersAndPopups(
   page: StagehandPage,
   clickTimeoutMs: number,
 ): Promise<string[]> {
   const dismissed: string[] = [];
+  const combinedSelector = COOKIE_AND_POPUP_SELECTORS.join(", ");
 
-  for (const selector of COOKIE_AND_POPUP_SELECTORS) {
-    const clicked = await tryClickSelector(page, selector, clickTimeoutMs);
-    if (clicked) {
-      dismissed.push(selector);
-      // Give the CMP a beat to tear down the overlay before the next probe.
+  for (let attempt = 0; attempt < MAX_DISMISS_ATTEMPTS; attempt += 1) {
+    const matched = await Promise.race([
+      findFirstVisibleSelector(page, COOKIE_AND_POPUP_SELECTORS),
+      sleep(clickTimeoutMs).then(() => null as string | null),
+    ]);
+
+    if (!matched) {
+      break;
+    }
+
+    try {
+      await Promise.race([
+        page.locator(combinedSelector).first().click(),
+        sleep(clickTimeoutMs).then(() => {
+          throw new Error(`click timed out after ${clickTimeoutMs}ms`);
+        }),
+      ]);
+      dismissed.push(matched);
+      // Give the CMP a beat to tear down before probing for a stacked modal.
       await sleep(150);
+    } catch {
+      break;
     }
   }
 
   return dismissed;
 }
 
-/**
- * Attempt a locator click bounded by `timeoutMs`. Stagehand's Locator.click has
- * no built-in timeout, so we race a short timer and treat misses as non-fatal.
- */
-async function tryClickSelector(
+/** Return the first selector in `selectors` that currently matches a visible node. */
+async function findFirstVisibleSelector(
   page: StagehandPage,
-  selector: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  try {
-    const visible = await Promise.race([
-      isSelectorVisible(page, selector),
-      sleep(timeoutMs).then(() => false),
-    ]);
-    if (!visible) {
-      return false;
+  selectors: readonly string[],
+): Promise<string | null> {
+  return page.evaluate<string | null, string[]>((list) => {
+    for (let i = 0; i < list.length; i += 1) {
+      const raw = list[i];
+      if (typeof raw !== "string") {
+        continue;
+      }
+
+      let element: Element | null = null;
+      try {
+        element = document.querySelector(raw);
+      } catch {
+        continue;
+      }
+      if (!element) {
+        continue;
+      }
+
+      const style = window.getComputedStyle(element);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.opacity === "0"
+      ) {
+        continue;
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return raw;
+      }
     }
 
-    await Promise.race([
-      page.locator(selector).first().click(),
-      sleep(timeoutMs).then(() => {
-        throw new Error(`click timed out after ${timeoutMs}ms`);
-      }),
-    ]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function isSelectorVisible(
-  page: StagehandPage,
-  selector: string,
-): Promise<boolean> {
-  return page.evaluate<boolean, string>((raw) => {
-    let element: Element | null = null;
-    try {
-      element = document.querySelector(raw);
-    } catch {
-      return false;
-    }
-    if (!element) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(element);
-    if (
-      style.display === "none" ||
-      style.visibility === "hidden" ||
-      style.opacity === "0"
-    ) {
-      return false;
-    }
-
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }, selector);
+    return null;
+  }, [...selectors]);
 }
 
 /**

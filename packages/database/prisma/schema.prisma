@@ -23,6 +23,9 @@ enum EvaluationRunStatus {
   RUNNING
   COMPLETED
   FAILED
+  /// Run aborted by an unpassable anti-bot wall (CAPTCHA, Datadome, etc.).
+  /// BullMQ still marks the job Completed so permanent IP blocks are not retried.
+  FAILED_AT_BLOCKER
 }
 
 /// Tenant / account that owns projects under evaluation.

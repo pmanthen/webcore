@@ -2,6 +2,13 @@ import type { IssueCategory } from "@autonomous-ux/database";
 import { z } from "zod";
 
 /**
+ * Injected into every pillar `extract()` instruction so ephemeral chrome is
+ * never scored as product UX friction.
+ */
+export const OVERLAY_IGNORE_INSTRUCTION =
+  "CRITICAL: Do NOT evaluate cookie consent banners, privacy policy disclaimers, or standard customer support chat widgets as UX friction. Ignore them entirely. Your evaluation must focus ONLY on the core product/content interface.";
+
+/**
  * Every optional field is modelled as `.nullable()` rather than `.optional()`.
  * Stagehand converts these Zod schemas to JSON Schema for structured output, and
  * OpenAI's strict mode requires every property to be listed as required — a
@@ -10,11 +17,13 @@ import { z } from "zod";
 const rawFindingSchema = z.object({
   title: z
     .string()
-    .describe("Short imperative headline for the problem, under 80 characters"),
+    .describe(
+      "Short imperative headline for a problem in the primary product/content DOM (not cookie banners, privacy disclaimers, or chat widgets), under 80 characters",
+    ),
   description: z
     .string()
     .describe(
-      "What is wrong and why it hurts the user, in one or two plain sentences",
+      "What is wrong in the core product/content interface and why it hurts the user, in one or two plain sentences. Must not describe ephemeral overlays.",
     ),
   recommendation: z
     .string()
@@ -28,13 +37,13 @@ const rawFindingSchema = z.object({
     .string()
     .nullable()
     .describe(
-      "CSS selector for the offending element, or null if it is not tied to one element",
+      "CSS selector for an offending element in the primary page structure (never an ephemeral overlay/widget), or null if it is not tied to one element",
     ),
   elementDescription: z
     .string()
     .nullable()
     .describe(
-      "Human description of the element, used to match it against observed elements",
+      "Human description of the primary-DOM element, used to match it against observed elements",
     ),
   evidence: z
     .string()
@@ -47,7 +56,9 @@ export type RawFinding = z.infer<typeof rawFindingSchema>;
 export const pillarExtractionSchema = z.object({
   findings: z
     .array(rawFindingSchema)
-    .describe("Every distinct problem found for this pillar; [] if none"),
+    .describe(
+      "Problems in the primary product/content DOM only. Do NOT include cookie consent banners, privacy policy disclaimers, or customer support chat widgets. [] if none.",
+    ),
 });
 
 export type PillarExtraction = z.infer<typeof pillarExtractionSchema>;
@@ -75,6 +86,12 @@ export interface HeuristicPillar {
   instruction: string;
 }
 
+function pillarInstruction(body: string): string {
+  return `${OVERLAY_IGNORE_INSTRUCTION}
+
+${body}`;
+}
+
 /**
  * One `extract()` per pillar. Splitting them keeps each instruction narrow, which
  * produces sharper findings than a single omnibus prompt and lets one pillar fail
@@ -83,7 +100,7 @@ export interface HeuristicPillar {
 export const HEURISTIC_PILLARS: readonly HeuristicPillar[] = [
   {
     category: "Accessibility",
-    instruction: `Audit this page for accessibility defects. Report only problems you can justify from the page content.
+    instruction: pillarInstruction(`Audit this page for accessibility defects. Report only problems you can justify from the primary product/content interface.
 
 Look for:
 - Images or icon-only controls with no alt text and no accessible name.
@@ -92,11 +109,11 @@ Look for:
 - Non-interactive elements (div, span) wired up to act as buttons or links without a role, tabindex, or keyboard handler.
 - Headings used out of order, or a page with no level-1 heading.
 
-For each problem give the severity, the CSS selector when it belongs to one element, and quote the evidence.`,
+For each problem give the severity, the CSS selector when it belongs to one element in the primary DOM, and quote the evidence.`),
   },
   {
     category: "Cognitive Load",
-    instruction: `Audit this page for cognitive load: work the visitor has to do to understand what is going on.
+    instruction: pillarInstruction(`Audit this page for cognitive load: work the visitor has to do to understand what is going on in the core product/content interface.
 
 Look for:
 - Navigation with so many items or nesting that scanning it is a chore.
@@ -105,11 +122,11 @@ Look for:
 - Dense blocks of text with no headings, lists, or visual hierarchy to break them up.
 - Repeated or near-duplicate links whose difference is unclear.
 
-For each problem give the severity, the CSS selector when it belongs to one element, and quote the evidence.`,
+For each problem give the severity, the CSS selector when it belongs to one element in the primary DOM, and quote the evidence.`),
   },
   {
     category: "Friction",
-    instruction: `Audit this page for friction: places where a motivated visitor stalls, backtracks, or fails.
+    instruction: pillarInstruction(`Audit this page for friction: places where a motivated visitor stalls, backtracks, or fails in the core product/content interface.
 
 Look for:
 - Dead ends — controls that go nowhere, empty states with no way forward, or links to missing content.
@@ -118,6 +135,6 @@ Look for:
 - Content or controls likely to shift position after load (late-loading banners, images without reserved space).
 - Required steps whose cost is hidden until the visitor has already committed.
 
-For each problem give the severity, the CSS selector when it belongs to one element, and quote the evidence.`,
+For each problem give the severity, the CSS selector when it belongs to one element in the primary DOM, and quote the evidence.`),
   },
 ];
