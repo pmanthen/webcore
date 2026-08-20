@@ -1,22 +1,66 @@
 import {
   Stagehand,
   type Action,
+  type ModelConfiguration,
   type V3Options,
 } from "@browserbasehq/stagehand";
-import type { EvaluationRunResult } from "@autonomous-ux/database";
+import type { EvaluationRunResult, UxFinding } from "@autonomous-ux/database";
 
 import { getEnv } from "../env.js";
+import {
+  HEURISTIC_PILLARS,
+  pageOverviewSchema,
+  pillarExtractionSchema,
+  type PageOverview,
+} from "./heuristics/schemas.js";
+import { extractStructured } from "./heuristics/extract.js";
+import {
+  resolveFindings,
+  type ResolvedFinding,
+} from "./heuristics/resolve-findings.js";
 import { buildMockEvaluationResult } from "./mock-findings.js";
+import {
+  captureElementCrop,
+  captureFullPage,
+  selectorExists,
+} from "./screenshots.js";
+import { buildExecutiveSummary, scoreFindings } from "./scoring.js";
+import { buildScreenshotKey, uploadArtifact } from "./storage.js";
+
+const OBSERVE_INSTRUCTION =
+  "Find every interactable element a visitor could use: links, buttons, form fields, selects, tabs, and menu triggers.";
+
+function buildModelConfiguration(): ModelConfiguration {
+  const env = getEnv();
+  const apiKey = env.STAGEHAND_MODEL_API_KEY ?? env.OPENAI_API_KEY;
+
+  // A plain model name lets Stagehand resolve credentials from the environment
+  // itself; only override when a gateway or explicit key is configured.
+  if (!apiKey && !env.STAGEHAND_BASE_URL) {
+    return env.STAGEHAND_MODEL;
+  }
+
+  return {
+    modelName: env.STAGEHAND_MODEL,
+    ...(apiKey ? { apiKey } : {}),
+    ...(env.STAGEHAND_BASE_URL ? { baseURL: env.STAGEHAND_BASE_URL } : {}),
+    openaiEndpointFormat: env.STAGEHAND_OPENAI_ENDPOINT_FORMAT,
+  };
+}
 
 function buildStagehandOptions(): V3Options {
   const env = getEnv();
 
   const options: V3Options = {
     env: env.STAGEHAND_ENV,
-    model: env.STAGEHAND_MODEL,
+    model: buildModelConfiguration(),
     verbose: env.STAGEHAND_VERBOSE as 0 | 1 | 2,
     localBrowserLaunchOptions: {
       headless: true,
+      viewport: {
+        width: env.UX_VIEWPORT_WIDTH,
+        height: env.UX_VIEWPORT_HEIGHT,
+      },
     },
   };
 
@@ -28,21 +72,36 @@ function buildStagehandOptions(): V3Options {
   return options;
 }
 
+/** Findings that justify spending a screenshot, worst first. */
+function croppableFindings(
+  findings: readonly ResolvedFinding[],
+): ResolvedFinding[] {
+  return findings
+    .filter(
+      (finding) =>
+        Boolean(finding.elementSelector) &&
+        (finding.severity === "High" || finding.severity === "Medium"),
+    )
+    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "High" ? -1 : 1));
+}
+
 /**
- * Skeleton UX evaluation using Stagehand + Playwright.
+ * Heuristic UX audit driven by Stagehand.
  *
- * Flow:
- * 1. Initialize Stagehand (LOCAL Chromium or Browserbase)
- * 2. Navigate to the target URL
- * 3. Use `observe()` / `act()` primitives to probe the page
- * 4. Return a structured evaluation payload (mock issues for Phase 1)
+ * 1. Navigate to the target URL.
+ * 2. Capture and store a full-page screenshot.
+ * 3. `observe()` the interactable elements, giving later steps real selectors.
+ * 4. `extract()` once per heuristic pillar against a strict Zod schema.
+ * 5. Crop and store evidence for the findings that warrant it.
+ * 6. Score the page and write an executive summary.
  *
- * Live-mode browser/LLM failures propagate to the worker so the project is
- * marked FAILED (after retries), instead of being reported as COMPLETED.
+ * Navigation and browser failures propagate so the worker marks the run FAILED.
+ * A single pillar or screenshot failing is logged and skipped — a partial audit
+ * is worth more than none.
  */
 export async function runUxEvaluation(
   url: string,
-  _context: { runId: string },
+  context: { runId: string },
 ): Promise<EvaluationRunResult> {
   const env = getEnv();
 
@@ -53,39 +112,159 @@ export async function runUxEvaluation(
     });
   }
 
+  const startedAt = Date.now();
   const stagehand = new Stagehand(buildStagehandOptions());
-  let observedActions: Action[] = [];
+  const pillarErrors: Record<string, string> = {};
 
   try {
     await stagehand.init();
 
     const page =
-      stagehand.context.activePage() ??
-      (await stagehand.context.newPage());
+      stagehand.context.activePage() ?? (await stagehand.context.newPage());
 
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.setViewportSize(env.UX_VIEWPORT_WIDTH, env.UX_VIEWPORT_HEIGHT);
+    await page.goto(url, {
+      waitUntil: "load",
+      timeoutMs: env.UX_NAV_TIMEOUT_MS,
+    });
 
-    observedActions = await stagehand.observe(
-      "Find the primary navigation links and the main call-to-action button",
+    const landedUrl = page.url() || url;
+    const pageTitle = await page.title().catch(() => "");
+
+    const runScreenshot = await uploadArtifact(
+      buildScreenshotKey(context.runId, "full-page"),
+      await captureFullPage(page),
     );
 
-    const firstAction = observedActions[0];
-    if (firstAction) {
+    let observed: Action[] = [];
+    try {
+      observed = await stagehand.observe(OBSERVE_INSTRUCTION, {
+        timeout: env.UX_EXTRACT_TIMEOUT_MS,
+      });
+    } catch (error) {
+      pillarErrors.observe = errorMessage(error);
+      console.warn("[ux-evaluation] observe failed; continuing", error);
+    }
+
+    let overview: PageOverview | null = null;
+    try {
+      overview = await extractStructured(
+        stagehand,
+        "Summarize what this page is for and how well it serves a first-time visitor.",
+        pageOverviewSchema,
+        { timeout: env.UX_EXTRACT_TIMEOUT_MS },
+      );
+    } catch (error) {
+      pillarErrors.overview = errorMessage(error);
+      console.warn("[ux-evaluation] overview extract failed", error);
+    }
+
+    const findings: ResolvedFinding[] = [];
+    const rawByPillar: Record<string, unknown> = {};
+
+    for (const pillar of HEURISTIC_PILLARS) {
       try {
-        await stagehand.act(firstAction);
-      } catch (actError) {
+        const extraction = await extractStructured(
+          stagehand,
+          pillar.instruction,
+          pillarExtractionSchema,
+          { timeout: env.UX_EXTRACT_TIMEOUT_MS },
+        );
+
+        rawByPillar[pillar.category] = extraction.findings;
+
+        findings.push(
+          ...(await resolveFindings(extraction.findings, {
+            category: pillar.category,
+            pageUrl: landedUrl,
+            observed,
+            selectorExists: (selector) => selectorExists(page, selector),
+          })),
+        );
+      } catch (error) {
+        pillarErrors[pillar.category] = errorMessage(error);
         console.warn(
-          "[ux-evaluation] stagehand.act failed; continuing with observe results",
-          actError,
+          `[ux-evaluation] extract failed for pillar ${pillar.category}`,
+          error,
         );
       }
     }
 
-    return buildMockEvaluationResult(url, {
-      mode: "live",
-      observedActions,
-      note: "Live Stagehand browse completed; UX issue list is still a scaffold.",
+    // Evidence crops, worst findings first, capped so a noisy page cannot
+    // flood object storage.
+    let cropped = 0;
+    for (const finding of croppableFindings(findings)) {
+      if (cropped >= env.UX_MAX_ELEMENT_SCREENSHOTS) {
+        break;
+      }
+
+      const selector = finding.elementSelector;
+      if (!selector) {
+        continue;
+      }
+
+      try {
+        const crop = await captureElementCrop(page, selector);
+        if (!crop) {
+          continue;
+        }
+
+        const artifact = await uploadArtifact(
+          buildScreenshotKey(
+            context.runId,
+            `${finding.category}-${cropped + 1}-${finding.title}`,
+          ),
+          crop,
+        );
+
+        finding.screenshotKey = artifact.key;
+        finding.screenshotUrl = artifact.url;
+        cropped += 1;
+      } catch (error) {
+        console.warn("[ux-evaluation] element crop failed", {
+          selector,
+          error,
+        });
+      }
+    }
+
+    const score = scoreFindings(findings);
+    const summary = buildExecutiveSummary(findings, {
+      url: landedUrl,
+      score,
+      pageType: overview?.pageType ?? null,
+      primaryGoal: overview?.primaryGoal ?? null,
+      overallImpression: overview?.overallImpression ?? null,
     });
+
+    return {
+      summary,
+      score,
+      findings: findings.map(toUxFinding),
+      screenshotKey: runScreenshot.key,
+      screenshotUrl: runScreenshot.url,
+      rawResponse: {
+        mode: "live",
+        url,
+        landedUrl,
+        pageTitle,
+        model: env.STAGEHAND_MODEL,
+        overview,
+        observedElements: observed.length,
+        observedActions: observed.slice(0, 40),
+        rawFindingsByPillar: rawByPillar,
+        selectorSources: findings.map((finding) => ({
+          title: finding.title,
+          selectorSource: finding.selectorSource,
+          proposedSelector: finding.proposedSelector,
+          elementSelector: finding.elementSelector,
+        })),
+        elementScreenshots: cropped,
+        ...(Object.keys(pillarErrors).length > 0 ? { pillarErrors } : {}),
+        durationMs: Date.now() - startedAt,
+        generatedAt: new Date().toISOString(),
+      },
+    };
   } catch (error) {
     console.error("[ux-evaluation] Stagehand live run failed", error);
     throw error instanceof Error
@@ -98,4 +277,22 @@ export async function runUxEvaluation(
       console.warn("[ux-evaluation] stagehand.close failed", closeError);
     }
   }
+}
+
+function toUxFinding(finding: ResolvedFinding): UxFinding {
+  return {
+    category: finding.category,
+    severity: finding.severity,
+    title: finding.title,
+    description: finding.description,
+    recommendation: finding.recommendation,
+    elementSelector: finding.elementSelector ?? null,
+    pageUrl: finding.pageUrl ?? null,
+    screenshotKey: finding.screenshotKey ?? null,
+    screenshotUrl: finding.screenshotUrl ?? null,
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
