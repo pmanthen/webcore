@@ -1,0 +1,12 @@
+{
+  "name": "@autonomous-ux/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Next.js frontend and core API for Autonomous UX Evaluation",
+  "scripts": {
+    "dev": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 1",
+    "build": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 1",
+    "lint": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 0",
+    "typecheck": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 0"
+  }
+}

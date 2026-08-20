@@ -1,0 +1,12 @@
+{
+  "name": "@autonomous-ux/worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BullMQ AI agent worker for headless UX evaluation",
+  "scripts": {
+    "dev": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 1",
+    "build": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 1",
+    "lint": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 0",
+    "typecheck": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 0"
+  }
+}
