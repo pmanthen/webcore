@@ -4,21 +4,29 @@
  */
 
 import type {
+  Account,
   Client,
   EvaluationFeedback,
   EvaluationRun,
   EvaluationRunStatus,
   Project,
   ProjectStatus,
+  Session,
+  User,
+  VerificationToken,
 } from "@prisma/client";
 
 export type {
+  Account,
   Client,
   EvaluationFeedback,
   EvaluationRun,
   EvaluationRunStatus,
   Project,
   ProjectStatus,
+  Session,
+  User,
+  VerificationToken,
 };
 
 /**
