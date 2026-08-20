@@ -22,7 +22,7 @@ import { buildMockEvaluationResult } from "./mock-findings.js";
 import {
   captureElementCrop,
   captureFullPage,
-  selectorExists,
+  elementExists,
 } from "./screenshots.js";
 import { buildExecutiveSummary, scoreFindings } from "./scoring.js";
 import { buildScreenshotKey, uploadArtifact } from "./storage.js";
@@ -178,7 +178,7 @@ export async function runUxEvaluation(
             category: pillar.category,
             pageUrl: landedUrl,
             observed,
-            selectorExists: (selector) => selectorExists(page, selector),
+            selectorExists: (selector) => elementExists(page, selector),
           })),
         );
       } catch (error) {

@@ -10,94 +10,102 @@ export interface ElementRect {
 }
 
 /**
+ * Every callback below is deliberately flat — no nested functions, and passed
+ * inline rather than via a named const.
+ *
+ * `page.evaluate` ships the callback to the browser via `Function.toString()`,
+ * and esbuild (which `tsx` uses in dev) rewrites nested and named functions to
+ * `__name(fn, "fn")` for stack traces. That helper only exists in the bundle, so
+ * the stringified source throws `__name is not defined` inside the page. Keeping
+ * the callbacks flat is what stops the selector-resolution logic below from
+ * being shared between them.
+ */
+
+/** True when the selector matches at least one node in the live DOM. */
+export async function elementExists(
+  page: NonNullable<StagehandPage>,
+  selector: string,
+): Promise<boolean> {
+  return page.evaluate<boolean, string>((raw) => {
+    const xpath = raw.startsWith("xpath=")
+      ? raw.slice(6)
+      : raw.startsWith("/") || raw.startsWith("(")
+        ? raw
+        : null;
+
+    if (xpath) {
+      return Boolean(
+        document.evaluate(
+          xpath,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null,
+        ).singleNodeValue,
+      );
+    }
+
+    try {
+      return Boolean(document.querySelector(raw));
+    } catch {
+      return false;
+    }
+  }, selector);
+}
+
+/**
  * Resolve a selector to a document-space rectangle, scrolling it into view first.
  *
- * The element must be on screen before capture: CDP's `Page.captureScreenshot`
- * cannot combine `clip` with `captureBeyondViewport`, so anything outside the
+ * The element has to be on screen before capture: CDP's `Page.captureScreenshot`
+ * refuses to combine `clip` with `captureBeyondViewport`, so anything outside the
  * visible region would come back blank.
  */
 export async function measureElement(
   page: NonNullable<StagehandPage>,
   selector: string,
 ): Promise<ElementRect | null> {
-  const rect = await page.evaluate<ElementRect | null, string>(
-    (rawSelector) => {
-      const resolve = (value: string): Element | null => {
-        const xpath = value.startsWith("xpath=")
-          ? value.slice("xpath=".length)
-          : value.startsWith("/") || value.startsWith("(")
-            ? value
-            : null;
+  return page.evaluate<ElementRect | null, string>((raw) => {
+    const xpath = raw.startsWith("xpath=")
+      ? raw.slice(6)
+      : raw.startsWith("/") || raw.startsWith("(")
+        ? raw
+        : null;
 
-        if (xpath) {
-          const result = document.evaluate(
-            xpath,
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null,
-          );
-          const node = result.singleNodeValue;
-          return node instanceof Element ? node : null;
-        }
-
-        try {
-          return document.querySelector(value);
-        } catch {
-          return null;
-        }
-      };
-
-      const element = resolve(rawSelector);
-      if (!element) {
-        return null;
+    let element: Element | null = null;
+    if (xpath) {
+      const node = document.evaluate(
+        xpath,
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null,
+      ).singleNodeValue;
+      element = node instanceof Element ? node : null;
+    } else {
+      try {
+        element = document.querySelector(raw);
+      } catch {
+        element = null;
       }
-
-      element.scrollIntoView({ block: "center", inline: "center" });
-
-      const box = element.getBoundingClientRect();
-      if (box.width < 1 || box.height < 1) {
-        return null;
-      }
-
-      return {
-        x: box.left + window.scrollX,
-        y: box.top + window.scrollY,
-        width: box.width,
-        height: box.height,
-      };
-    },
-    selector,
-  );
-
-  return rect;
-}
-
-/** True when the selector matches at least one node in the live DOM. */
-export async function selectorExists(
-  page: NonNullable<StagehandPage>,
-  selector: string,
-): Promise<boolean> {
-  return page.evaluate<boolean, string>((value) => {
-    try {
-      if (value.startsWith("xpath=") || value.startsWith("/")) {
-        const xpath = value.startsWith("xpath=")
-          ? value.slice("xpath=".length)
-          : value;
-        return Boolean(
-          document.evaluate(
-            xpath,
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null,
-          ).singleNodeValue,
-        );
-      }
-      return Boolean(document.querySelector(value));
-    } catch {
-      return false;
     }
+
+    if (!element) {
+      return null;
+    }
+
+    element.scrollIntoView({ block: "center", inline: "center" });
+
+    const box = element.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) {
+      return null;
+    }
+
+    return {
+      x: box.left + window.scrollX,
+      y: box.top + window.scrollY,
+      width: box.width,
+      height: box.height,
+    };
   }, selector);
 }
 
@@ -130,11 +138,11 @@ export async function captureElementCrop(
   const bounds = await page.evaluate<{ width: number; height: number }>(() => ({
     width: Math.max(
       document.documentElement.scrollWidth,
-      document.body?.scrollWidth ?? 0,
+      document.body ? document.body.scrollWidth : 0,
     ),
     height: Math.max(
       document.documentElement.scrollHeight,
-      document.body?.scrollHeight ?? 0,
+      document.body ? document.body.scrollHeight : 0,
     ),
   }));
 

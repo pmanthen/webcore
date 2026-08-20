@@ -10,19 +10,34 @@ import {
  * one blocking defect should not score well because it is otherwise tidy.
  */
 const SEVERITY_PENALTY: Record<IssueSeverity, number> = {
-  High: 14,
-  Medium: 6,
-  Low: 2,
+  High: 10,
+  Medium: 4,
+  Low: 1,
 };
 
-/** Aggregate UX score from 0–100. */
+/**
+ * Half-penalty point: the penalty at which a page scores 50.
+ * Tuned so a single high-severity defect lands in the high 70s and a page with
+ * five of them lands around 40.
+ */
+const PENALTY_MIDPOINT = 45;
+
+/**
+ * Aggregate UX score from 0–100.
+ *
+ * Penalties are mapped through a hyperbolic curve rather than subtracted, so the
+ * score has diminishing returns. Straight subtraction bottoms out: a page with
+ * eleven findings and a page with thirty would both floor at 0, which throws away
+ * the distinction just when comparing runs matters most.
+ */
 export function scoreFindings(findings: readonly UxFinding[]): number {
   const penalty = findings.reduce(
     (total, finding) => total + SEVERITY_PENALTY[finding.severity],
     0,
   );
 
-  return Math.max(0, Math.min(100, Math.round(100 - penalty)));
+  const score = 100 / (1 + penalty / PENALTY_MIDPOINT);
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 function formatCount(count: number, noun: string): string {
