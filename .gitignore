@@ -10,6 +10,7 @@ build/
 out/
 coverage/
 *.tsbuildinfo
+apps/web/.env.local
 
 # Environment & secrets
 .env

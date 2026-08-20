@@ -4,12 +4,30 @@
   "private": true,
   "description": "Next.js frontend and core API for Autonomous UX Evaluation",
   "scripts": {
-    "dev": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 1",
-    "build": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 1",
-    "lint": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 0",
-    "typecheck": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 0"
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@autonomous-ux/database": "*"
+    "@autonomous-ux/database": "*",
+    "bullmq": "^5.44.0",
+    "ioredis": "^5.6.0",
+    "next": "^15.5.23",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^15.5.23",
+    "tailwindcss": "^4",
+    "typescript": "^5"
   }
 }

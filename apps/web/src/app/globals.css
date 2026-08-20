@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #13212b;
+  --muted: #5b6b76;
+  --line: #d5dde3;
+  --panel: rgba(255, 255, 255, 0.72);
+  --accent: #0f766e;
+  --accent-soft: #d9efe9;
+  --bg-0: #eef5f2;
+  --bg-1: #f7f3ea;
+  --bg-2: #dceaf5;
+}
+
+@theme inline {
+  --color-background: var(--bg-0);
+  --color-foreground: var(--ink);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes soft-shift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 420ms ease-out both;
+}
+
+body {
+  color: var(--ink);
+  font-family: var(--font-body), ui-sans-serif, sans-serif;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, var(--bg-2), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, var(--bg-1), transparent 50%),
+    linear-gradient(135deg, var(--bg-0), #f4f7f8 45%, var(--bg-1));
+  background-size: 140% 140%;
+  animation: soft-shift 28s ease-in-out infinite;
+  min-height: 100vh;
+}
