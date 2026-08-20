@@ -3,6 +3,7 @@ import {
   UX_EVALUATION_QUEUE_NAME,
   type UxEvaluationJobData,
 } from "@autonomous-ux/database";
+import { createId } from "@paralleldrive/cuid2";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -34,6 +35,28 @@ function deriveProjectName(url: string, explicit?: string): string {
   }
 }
 
+async function markEnqueueFailed(
+  projectId: string,
+  evaluationId: string,
+  reason: string,
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.project.update({
+      where: { id: projectId },
+      data: { status: "FAILED" },
+    }),
+    prisma.evaluationFeedback.update({
+      where: { id: evaluationId },
+      data: {
+        summary: `Failed to enqueue evaluation: ${reason}`,
+        issues: [],
+        rawResponse: { error: reason, phase: "enqueue" },
+        jobId: evaluationId,
+      },
+    }),
+  ]);
+}
+
 export async function POST(request: Request) {
   let json: unknown;
   try {
@@ -52,6 +75,9 @@ export async function POST(request: Request) {
 
   const { url, name } = parsed.data;
   const env = getEnv();
+
+  let projectId: string | undefined;
+  let evaluationId: string | undefined;
 
   try {
     const client = await prisma.client.upsert({
@@ -73,17 +99,25 @@ export async function POST(request: Request) {
         },
       });
 
+      // Pre-assign evaluation id so jobId is known before queue.add — avoids a
+      // post-enqueue DB write that could return 500 after the job already runs.
+      const nextEvaluationId = createId();
       const evaluation = await tx.evaluationFeedback.create({
         data: {
+          id: nextEvaluationId,
           projectId: project.id,
           summary: null,
           score: null,
           issues: [],
+          jobId: nextEvaluationId,
         },
       });
 
       return { project, evaluation };
     });
+
+    projectId = result.project.id;
+    evaluationId = result.evaluation.id;
 
     const jobData: UxEvaluationJobData = {
       projectId: result.project.id,
@@ -92,31 +126,43 @@ export async function POST(request: Request) {
       clientId: client.id,
     };
 
-    const queue = getEvaluationQueue();
-    const job = await queue.add("evaluate", jobData, {
-      jobId: result.evaluation.id,
-    });
+    try {
+      const queue = getEvaluationQueue();
+      const job = await queue.add("evaluate", jobData, {
+        jobId: result.evaluation.id,
+      });
 
-    await prisma.evaluationFeedback.update({
-      where: { id: result.evaluation.id },
-      data: { jobId: job.id ?? result.evaluation.id },
-    });
-
-    return NextResponse.json(
-      {
-        projectId: result.project.id,
-        evaluationId: result.evaluation.id,
-        jobId: job.id,
-        status: result.project.status,
-        queue: UX_EVALUATION_QUEUE_NAME,
-        url: result.project.url,
-      },
-      { status: 202 },
-    );
+      return NextResponse.json(
+        {
+          projectId: result.project.id,
+          evaluationId: result.evaluation.id,
+          jobId: job.id ?? result.evaluation.id,
+          status: result.project.status,
+          queue: UX_EVALUATION_QUEUE_NAME,
+          url: result.project.url,
+        },
+        { status: 202 },
+      );
+    } catch (enqueueError) {
+      const reason =
+        enqueueError instanceof Error
+          ? enqueueError.message
+          : "Unknown enqueue error";
+      console.error("[api/evaluate] enqueue failed", enqueueError);
+      await markEnqueueFailed(result.project.id, result.evaluation.id, reason);
+      return NextResponse.json(
+        { error: "Failed to enqueue evaluation", projectId, evaluationId },
+        { status: 500 },
+      );
+    }
   } catch (error) {
     console.error("[api/evaluate] failed", error);
     return NextResponse.json(
-      { error: "Failed to enqueue evaluation" },
+      {
+        error: "Failed to create evaluation",
+        ...(projectId ? { projectId } : {}),
+        ...(evaluationId ? { evaluationId } : {}),
+      },
       { status: 500 },
     );
   }
