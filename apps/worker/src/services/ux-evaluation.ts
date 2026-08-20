@@ -72,6 +72,35 @@ function buildStagehandOptions(): V3Options {
   return options;
 }
 
+/**
+ * `page.goto` does not reject when a host is unreachable — Chrome simply renders
+ * its own error page, and the audit would then happily report findings about
+ * "This site can't be reached" as if they were the customer's. Treat anything
+ * that did not actually load as a run failure.
+ */
+function assertNavigationSucceeded(
+  requestedUrl: string,
+  landedUrl: string,
+  response: { status: () => number; statusText: () => string } | null,
+): void {
+  if (landedUrl.startsWith("chrome-error://")) {
+    throw new Error(`Navigation to ${requestedUrl} failed: the host is unreachable`);
+  }
+
+  if (!response) {
+    throw new Error(
+      `Navigation to ${requestedUrl} produced no HTTP response; the page did not load`,
+    );
+  }
+
+  const status = response.status();
+  if (status >= 400) {
+    throw new Error(
+      `Navigation to ${requestedUrl} returned HTTP ${status} ${response.statusText()}; there is no page to audit`,
+    );
+  }
+}
+
 /** Findings that justify spending a screenshot, worst first. */
 function croppableFindings(
   findings: readonly ResolvedFinding[],
@@ -123,12 +152,13 @@ export async function runUxEvaluation(
       stagehand.context.activePage() ?? (await stagehand.context.newPage());
 
     await page.setViewportSize(env.UX_VIEWPORT_WIDTH, env.UX_VIEWPORT_HEIGHT);
-    await page.goto(url, {
+    const response = await page.goto(url, {
       waitUntil: "load",
       timeoutMs: env.UX_NAV_TIMEOUT_MS,
     });
 
     const landedUrl = page.url() || url;
+    assertNavigationSucceeded(url, landedUrl, response);
     const pageTitle = await page.title().catch(() => "");
 
     const runScreenshot = await uploadArtifact(

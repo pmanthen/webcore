@@ -145,6 +145,14 @@ createServer((req, res) => {
     return;
   }
 
+  // Only the root serves the page, so an unknown path exercises the worker's
+  // "there is no page to audit" guard.
+  if (req.url !== "/") {
+    res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+    res.end("<!doctype html><title>404</title><h1>Not found</h1>");
+    return;
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-store",
