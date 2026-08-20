@@ -2,4 +2,6 @@
 
 Next.js App Router application (UI + core API).
 
-Scaffolded in **Step 3**. This package is a workspace placeholder after Step 1.
+Depends on `@autonomous-ux/database` for Prisma and shared types.
+
+Scaffolded in **Step 3**. This package is a workspace placeholder until then.

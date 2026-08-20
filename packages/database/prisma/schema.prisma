@@ -1,0 +1,74 @@
+// Prisma schema for Autonomous UX Evaluation
+// Shared by apps/web (API) and apps/worker (AI agent) via @autonomous-ux/database
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  PENDING
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Tenant / account that owns projects under evaluation.
+model Client {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  projects Project[]
+
+  @@map("clients")
+}
+
+/// A web property (URL) submitted for autonomous UX evaluation.
+model Project {
+  id        String        @id @default(cuid())
+  clientId  String        @map("client_id")
+  name      String?
+  url       String
+  status    ProjectStatus @default(PENDING)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  client       Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  evaluations  EvaluationFeedback[]
+
+  @@index([clientId])
+  @@index([status])
+  @@map("projects")
+}
+
+/// Structured UX findings produced by the AI agent worker for a project.
+model EvaluationFeedback {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  /// Short human-readable overview of the evaluation run.
+  summary      String?
+  /// Overall UX score from 0–100 when available.
+  score        Float?
+  /// Typed list of UX issues (see UxIssue in @autonomous-ux/database).
+  issues       Json     @default("[]")
+  /// Optional raw agent / Stagehand payload for debugging.
+  rawResponse  Json?    @map("raw_response")
+  /// BullMQ job id that produced this feedback, when applicable.
+  jobId        String?  @map("job_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([jobId])
+  @@map("evaluation_feedback")
+}

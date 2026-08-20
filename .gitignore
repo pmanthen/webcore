@@ -34,6 +34,7 @@ Thumbs.db
 # Prisma
 apps/web/prisma/*.db
 apps/web/prisma/*.db-journal
+packages/database/dist/
 
 # Docker / Terraform
 .terraform/

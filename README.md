@@ -8,6 +8,7 @@ Full-stack TypeScript SaaS for automated UX feedback. Clients onboard a web proj
 |---------|------|
 | `apps/web` | Next.js (App Router) — UI, auth, onboarding, API, job enqueue |
 | `apps/worker` | Node.js worker — BullMQ consumer, Playwright + Stagehand evaluation |
+| `packages/database` | Shared Prisma schema, client, and domain TypeScript types |
 | PostgreSQL | Primary data store (Prisma) |
 | Redis | BullMQ job queue |
 
@@ -34,6 +35,9 @@ npm run docker:up
 docker compose ps
 # postgres → healthy on localhost:5432
 # redis    → healthy on localhost:6379
+
+# 4. Apply database migrations (Prisma)
+npm run db:migrate:deploy
 ```
 
 Stop infrastructure:
@@ -61,6 +65,27 @@ Copy `.env.example` to `.env`. Key variables:
 
 When `web` / `worker` later run as Compose services, use the internal hostnames `postgres` and `redis` on the `ux-eval-network` bridge network instead of `localhost`.
 
+## Shared database package
+
+`@autonomous-ux/database` owns the Prisma schema and exports a singleton client plus typed domain helpers:
+
+```ts
+import {
+  prisma,
+  UX_EVALUATION_QUEUE_NAME,
+  parseUxIssues,
+  type UxIssue,
+  type UxEvaluationJobData,
+  type ProjectStatus,
+} from "@autonomous-ux/database";
+```
+
+| Model | Purpose |
+|-------|---------|
+| `Client` | Tenant / account |
+| `Project` | Target URL + `ProjectStatus` |
+| `EvaluationFeedback` | UX issues (`UxIssue[]` JSON), score, optional raw agent payload |
+
 ## Workspace scripts
 
 | Script | Description |
@@ -68,13 +93,18 @@ When `web` / `worker` later run as Compose services, use the internal hostnames 
 | `npm run docker:up` | Start Postgres + Redis |
 | `npm run docker:down` | Stop Compose stack |
 | `npm run docker:logs` | Tail Compose logs |
+| `npm run db:generate` | Generate Prisma Client |
+| `npm run db:migrate` | Create/apply migrations (dev) |
+| `npm run db:migrate:deploy` | Apply existing migrations |
+| `npm run db:studio` | Open Prisma Studio |
+| `npm run build:db` | Compile `@autonomous-ux/database` |
 | `npm run dev:web` | Dev server for Next.js (after Step 3) |
 | `npm run dev:worker` | Dev process for the worker (after Step 4) |
 
 ## Implementation roadmap
 
 1. **Step 1 (done):** Monorepo + Docker Compose (Postgres, Redis)
-2. **Step 2:** Prisma schema + shared types
+2. **Step 2 (done):** Prisma schema + shared types (`packages/database`)
 3. **Step 3:** Next.js dashboard, onboard form, `/api/evaluate`
 4. **Step 4:** BullMQ worker + Stagehand UX evaluation skeleton
 5. **Step 5:** Terraform AWS foundation (`infra/`)
