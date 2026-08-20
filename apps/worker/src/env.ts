@@ -18,6 +18,19 @@ const envSchema = z.object({
   BROWSERBASE_API_KEY: z.string().optional(),
   BROWSERBASE_PROJECT_ID: z.string().optional(),
   WORKER_CONCURRENCY: z.coerce.number().int().positive().default(1),
+
+  // MinIO / S3-compatible object storage for screenshots.
+  MINIO_ENDPOINT: z.string().min(1).default("localhost"),
+  MINIO_PORT: z.coerce.number().int().positive().default(9000),
+  MINIO_USE_SSL: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  MINIO_ACCESS_KEY: z.string().min(1).default("minioadmin"),
+  MINIO_SECRET_KEY: z.string().min(1).default("minioadmin"),
+  MINIO_BUCKET: z.string().min(1).default("ux-artifacts"),
+  /** Base URL for direct (non-proxied) artifact links. */
+  MINIO_PUBLIC_URL: z.string().url().default("http://localhost:9000"),
 });
 
 export type WorkerEnv = z.infer<typeof envSchema>;
