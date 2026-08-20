@@ -137,6 +137,49 @@ Findings use a fixed triage taxonomy stored as plain strings:
 | `npm run build:db` | Compile `@autonomous-ux/database` |
 | `npm run dev:web` | Dev server for Next.js (`http://localhost:3000`) |
 | `npm run dev:worker` | BullMQ worker (Stagehand UX evaluation) |
+| `npm run typecheck` | `tsc` across every workspace, tests included |
+| `npm run lint` | ESLint (`apps/web`) and `tsc` (`packages/*`, `apps/worker`) |
+| `npm run test` | Vitest across all three workspaces |
+| `npm run test:watch` | Vitest in watch mode |
+
+## Testing
+
+Vitest runs from the repo root as a single multi-project suite. Each workspace
+owns a `vitest.config.mts` and the root config discovers them, so
+`npm run test -w @autonomous-ux/worker` behaves exactly like that project does in
+the full run.
+
+```bash
+npm run test                          # everything
+npm run test -w @autonomous-ux/worker # one workspace
+npm run test:watch                    # watch mode
+```
+
+No database, Redis, or MinIO is needed. `packages/database` is aliased to its
+source rather than `dist/`, so a test run never waits on `build:db`, and the
+Prisma client — constructed on import but not connected until a query runs —
+gets a throwaway `DATABASE_URL` from the Vitest config.
+
+| Suite | Covers |
+|-------|--------|
+| `packages/database/tests` | Severity and category coercion, the type guards, `summarizeSeverities`, `toTypedFeedback` |
+| `apps/worker/tests` | The `100 / (1 + penalty / 45)` scoring curve and its boundaries, executive-summary composition, the heuristic Zod schemas, selector verification and the `observe()` fallback |
+| `apps/web/tests` | Artifact key validation and proxy-path encoding, triage tone and score-gauge thresholds |
+
+Selector verification is exercised against a real DOM (`happy-dom`) rather than a
+stubbed lookup, so a hallucinated selector, an unparseable one, and a valid one
+each take the path they would take in the browser.
+
+Test files live in a `tests/` directory per workspace, outside the `src/**`
+that the build compiles, and are typechecked by a sibling `tsconfig.test.json`.
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
+`master` and on every pull request: `npm ci` (whose `postinstall` generates the
+Prisma client and builds the shared package), then `npm run typecheck`,
+`npm run lint`, and `npm run test`. Runs are cancelled when a branch is pushed
+again while one is still in flight.
 
 ## Web app (Step 3)
 
@@ -190,6 +233,9 @@ job id equals `runId` so a run is always traceable back to its job.
 5. **Step 5 (done):** Terraform AWS foundation (`infra/`)
 6. **Step 6 (done):** Core intelligence engine — MinIO artifacts, per-finding schema,
    Stagehand `observe()` / `extract()` heuristic pipeline, triage dashboard
+7. **Step 7 (done):** Vitest across the monorepo and a GitHub Actions CI pipeline
+8. **Step 8 (next):** Auth.js sessions and per-tenant query scoping, replacing the
+   `DEMO_CLIENT_EMAIL` bypass
 
 ## AWS / Terraform (Step 5)
 
