@@ -42,12 +42,16 @@ apps/worker/dist/
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
 crash.log
+crash.*.log
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+infra/terraform.tfvars
+*.tfvars
+!infra/terraform.tfvars.example
+
 
 # Test / misc
 *.class
