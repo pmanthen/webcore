@@ -2,6 +2,7 @@ import type { EvaluationRunStatus } from "@autonomous-ux/database";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
+import { BlockerEvidence } from "@/components/results/BlockerEvidence";
 import { FullPagePreview } from "@/components/results/FullPagePreview";
 import { ScoreGauge } from "@/components/results/ScoreGauge";
 import { TriageBoard } from "@/components/results/TriageBoard";
@@ -14,8 +15,17 @@ export const dynamic = "force-dynamic";
 const RUN_STATUS_TONE: Record<EvaluationRunStatus, string> = {
   COMPLETED: "bg-emerald-50 text-emerald-800 ring-emerald-200",
   FAILED: "bg-rose-50 text-rose-800 ring-rose-200",
+  FAILED_AT_BLOCKER: "bg-orange-50 text-orange-900 ring-orange-200",
   RUNNING: "bg-sky-50 text-sky-800 ring-sky-200",
   QUEUED: "bg-amber-50 text-amber-900 ring-amber-200",
+};
+
+const RUN_STATUS_LABEL: Record<EvaluationRunStatus, string> = {
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+  FAILED_AT_BLOCKER: "BLOCKED",
+  RUNNING: "RUNNING",
+  QUEUED: "QUEUED",
 };
 
 function formatTimestamp(value: string | null): string {
@@ -52,6 +62,7 @@ export default async function ProjectResultsPage({
 
   const { project, run, findings, breakdown, history } = results;
   const label = project.name ?? project.url;
+  const isBlocked = run?.status === "FAILED_AT_BLOCKER";
 
   return (
     <div className="space-y-6">
@@ -83,39 +94,44 @@ export default async function ProjectResultsPage({
           style={{ animationDelay: "60ms" }}
         >
           <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-            <div className="flex items-start gap-5">
-              <ScoreGauge score={run.score} />
-              {run.screenshotKey ? (
-                <FullPagePreview
-                  artifactKey={run.screenshotKey}
-                  label={label}
-                />
-              ) : null}
-            </div>
+            {!isBlocked ? (
+              <div className="flex items-start gap-5">
+                <ScoreGauge score={run.score} />
+                {run.screenshotKey ? (
+                  <FullPagePreview
+                    artifactKey={run.screenshotKey}
+                    label={label}
+                  />
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="min-w-0 flex-1 space-y-4">
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 <span
                   className={`rounded px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${RUN_STATUS_TONE[run.status]}`}
                 >
-                  {run.status}
+                  {RUN_STATUS_LABEL[run.status]}
                 </span>
                 <span className="text-[color:var(--muted)]">
-                  Completed {formatTimestamp(run.finishedAt ?? run.createdAt)}{" "}
-                  UTC
+                  {isBlocked ? "Blocked" : "Completed"}{" "}
+                  {formatTimestamp(run.finishedAt ?? run.createdAt)} UTC
                 </span>
               </div>
 
               <div>
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--muted)]">
-                  Executive summary
+                  {isBlocked ? "Blocker details" : "Executive summary"}
                 </h2>
                 <p className="mt-1 leading-relaxed text-[color:var(--ink)]">
-                  {run.summary ?? "No summary was recorded for this run."}
+                  {run.summary ??
+                    (isBlocked
+                      ? "The evaluation was blocked by a CAPTCHA or anti-bot protection."
+                      : "No summary was recorded for this run.")}
                 </p>
               </div>
 
-              {run.error ? (
+              {run.error && !isBlocked ? (
                 <p
                   className="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800"
                   role="alert"
@@ -124,29 +140,31 @@ export default async function ProjectResultsPage({
                 </p>
               ) : null}
 
-              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="rounded-md border border-[color:var(--line)] bg-white/70 px-3 py-2">
-                  <dt className="text-xs uppercase tracking-wide text-[color:var(--muted)]">
-                    Total
-                  </dt>
-                  <dd className="font-[family-name:var(--font-display)] text-2xl text-[color:var(--ink)]">
-                    {findings.length}
-                  </dd>
-                </div>
-                {(["High", "Medium", "Low"] as const).map((severity) => (
-                  <div
-                    key={severity}
-                    className={`rounded-md px-3 py-2 ring-1 ring-inset ${SEVERITY_TONE[severity]}`}
-                  >
-                    <dt className="text-xs uppercase tracking-wide opacity-80">
-                      {severity}
+              {!isBlocked ? (
+                <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div className="rounded-md border border-[color:var(--line)] bg-white/70 px-3 py-2">
+                    <dt className="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                      Total
                     </dt>
-                    <dd className="font-[family-name:var(--font-display)] text-2xl">
-                      {breakdown[severity]}
+                    <dd className="font-[family-name:var(--font-display)] text-2xl text-[color:var(--ink)]">
+                      {findings.length}
                     </dd>
                   </div>
-                ))}
-              </dl>
+                  {(["High", "Medium", "Low"] as const).map((severity) => (
+                    <div
+                      key={severity}
+                      className={`rounded-md px-3 py-2 ring-1 ring-inset ${SEVERITY_TONE[severity]}`}
+                    >
+                      <dt className="text-xs uppercase tracking-wide opacity-80">
+                        {severity}
+                      </dt>
+                      <dd className="font-[family-name:var(--font-display)] text-2xl">
+                        {breakdown[severity]}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
             </div>
           </div>
 
@@ -178,7 +196,15 @@ export default async function ProjectResultsPage({
         </p>
       )}
 
-      {run ? <TriageBoard findings={findings} /> : null}
+      {run && isBlocked ? (
+        <BlockerEvidence
+          artifactKey={run.screenshotKey}
+          label={label}
+          summary={run.summary}
+        />
+      ) : null}
+
+      {run && !isBlocked ? <TriageBoard findings={findings} /> : null}
     </div>
   );
 }

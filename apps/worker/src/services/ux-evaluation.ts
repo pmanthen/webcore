@@ -17,6 +17,11 @@ import {
   buildBrowserbaseStealthParams,
   buildStealthLaunchOptions,
 } from "./browser/stealth.js";
+import type { StagehandPage } from "./browser/types.js";
+import {
+  BLOCKER_SUMMARY,
+  EvaluationBlockedError,
+} from "./evaluation-blocked-error.js";
 import {
   HEURISTIC_PILLARS,
   pageOverviewSchema,
@@ -124,6 +129,54 @@ function croppableFindings(
 }
 
 /**
+ * True when the browser page is still usable enough to capture evidence.
+ * CAPTCHA walls typically leave the tab open on the challenge screen.
+ */
+async function isBrowserAlive(
+  page: StagehandPage | null,
+): Promise<boolean> {
+  if (!page) {
+    return false;
+  }
+
+  try {
+    const maybeClosed = page as StagehandPage & { isClosed?: () => boolean };
+    if (typeof maybeClosed.isClosed === "function" && maybeClosed.isClosed()) {
+      return false;
+    }
+
+    await page.evaluate(() => true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Capture the exact failure viewport (often a CAPTCHA / anti-bot interstitial)
+ * and upload it to MinIO so the triage dashboard can show blocker evidence.
+ */
+async function captureBlockerEvidence(
+  page: StagehandPage,
+  runId: string,
+): Promise<{ key: string; url: string } | null> {
+  try {
+    const buffer = await captureFullPage(page);
+    const artifact = await uploadArtifact(
+      buildScreenshotKey(runId, "blocker"),
+      buffer,
+    );
+    return { key: artifact.key, url: artifact.url };
+  } catch (error) {
+    console.warn("[ux-evaluation] blocker screenshot upload failed", {
+      runId,
+      error: errorMessage(error),
+    });
+    return null;
+  }
+}
+
+/**
  * Heuristic UX audit driven by Stagehand.
  *
  * 1. Launch Chromium with stealth args / headers (or Browserbase advanced stealth).
@@ -135,9 +188,10 @@ function croppableFindings(
  * 7. Crop and store evidence for the findings that warrant it.
  * 8. Score the page and write an executive summary.
  *
- * Navigation and browser failures propagate so the worker marks the run FAILED.
- * A single pillar or screenshot failing is logged and skipped — a partial audit
- * is worth more than none.
+ * Catastrophic Stagehand failures (CAPTCHA walls, anti-bot blocks, hard timeouts)
+ * become `EvaluationBlockedError` with optional MinIO evidence — the worker marks
+ * the run `FAILED_AT_BLOCKER` without rethrowing to BullMQ. A single pillar or
+ * screenshot failing is logged and skipped — a partial audit is worth more than none.
  */
 export async function runUxEvaluation(
   url: string,
@@ -156,175 +210,217 @@ export async function runUxEvaluation(
   const stagehand = new Stagehand(buildStagehandOptions());
   const pillarErrors: Record<string, string> = {};
   let preflight: PreflightReport | null = null;
+  let page: StagehandPage | null = null;
 
   try {
     await stagehand.init();
 
-    const page =
+    page =
       stagehand.context.activePage() ?? (await stagehand.context.newPage());
 
     await applyStealthContext(stagehand, page, env);
 
-    const response = await page.goto(url, {
-      waitUntil: "load",
-      timeoutMs: env.UX_NAV_TIMEOUT_MS,
-    });
-
-    const landedUrl = page.url() || url;
-    assertNavigationSucceeded(url, landedUrl, response);
-    const pageTitle = await page.title().catch(() => "");
-
+    // Entire goto → final extract path is wrapped so unpassable blockers
+    // (Cloudflare CAPTCHA, Datadome, hard timeouts) degrade gracefully.
     try {
-      preflight = await runPreflightCleanup(
-        page,
-        stagehand,
-        preflightOptionsFromEnv(env),
-      );
-      console.info("[ux-evaluation] preflight complete", {
-        runId: context.runId,
-        ...preflight,
+      const response = await page.goto(url, {
+        waitUntil: "load",
+        timeoutMs: env.UX_NAV_TIMEOUT_MS,
       });
-    } catch (error) {
-      // Pre-flight is best-effort: never abort an otherwise reachable page.
-      pillarErrors.preflight = errorMessage(error);
-      console.warn("[ux-evaluation] preflight failed; continuing", error);
-    }
 
-    const runScreenshot = await uploadArtifact(
-      buildScreenshotKey(context.runId, "full-page"),
-      await captureFullPage(page),
-    );
-    let observed: Action[] = [];
-    try {
-      observed = await stagehand.observe(OBSERVE_INSTRUCTION, {
-        timeout: env.UX_EXTRACT_TIMEOUT_MS,
-      });
-    } catch (error) {
-      pillarErrors.observe = errorMessage(error);
-      console.warn("[ux-evaluation] observe failed; continuing", error);
-    }
+      const landedUrl = page.url() || url;
+      assertNavigationSucceeded(url, landedUrl, response);
+      const pageTitle = await page.title().catch(() => "");
 
-    let overview: PageOverview | null = null;
-    try {
-      overview = await extractStructured(
-        stagehand,
-        "Summarize what this page is for and how well it serves a first-time visitor.",
-        pageOverviewSchema,
-        { timeout: env.UX_EXTRACT_TIMEOUT_MS },
-      );
-    } catch (error) {
-      pillarErrors.overview = errorMessage(error);
-      console.warn("[ux-evaluation] overview extract failed", error);
-    }
-
-    const findings: ResolvedFinding[] = [];
-    const rawByPillar: Record<string, unknown> = {};
-
-    for (const pillar of HEURISTIC_PILLARS) {
       try {
-        const extraction = await extractStructured(
+        preflight = await runPreflightCleanup(
+          page,
           stagehand,
-          pillar.instruction,
-          pillarExtractionSchema,
+          preflightOptionsFromEnv(env),
+        );
+        console.info("[ux-evaluation] preflight complete", {
+          runId: context.runId,
+          ...preflight,
+        });
+      } catch (error) {
+        // Pre-flight is best-effort: never abort an otherwise reachable page.
+        pillarErrors.preflight = errorMessage(error);
+        console.warn("[ux-evaluation] preflight failed; continuing", error);
+      }
+
+      const runScreenshot = await uploadArtifact(
+        buildScreenshotKey(context.runId, "full-page"),
+        await captureFullPage(page),
+      );
+      let observed: Action[] = [];
+      try {
+        observed = await stagehand.observe(OBSERVE_INSTRUCTION, {
+          timeout: env.UX_EXTRACT_TIMEOUT_MS,
+        });
+      } catch (error) {
+        pillarErrors.observe = errorMessage(error);
+        console.warn("[ux-evaluation] observe failed; continuing", error);
+      }
+
+      let overview: PageOverview | null = null;
+      try {
+        overview = await extractStructured(
+          stagehand,
+          "Summarize what this page is for and how well it serves a first-time visitor. Focus on the core product/content interface; ignore cookie banners, privacy disclaimers, and chat widgets.",
+          pageOverviewSchema,
           { timeout: env.UX_EXTRACT_TIMEOUT_MS },
         );
-
-        rawByPillar[pillar.category] = extraction.findings;
-
-        findings.push(
-          ...(await resolveFindings(extraction.findings, {
-            category: pillar.category,
-            pageUrl: landedUrl,
-            observed,
-            selectorExists: (selector) => elementExists(page, selector),
-          })),
-        );
       } catch (error) {
-        pillarErrors[pillar.category] = errorMessage(error);
-        console.warn(
-          `[ux-evaluation] extract failed for pillar ${pillar.category}`,
-          error,
-        );
-      }
-    }
-
-    // Evidence crops, worst findings first, capped so a noisy page cannot
-    // flood object storage.
-    let cropped = 0;
-    for (const finding of croppableFindings(findings)) {
-      if (cropped >= env.UX_MAX_ELEMENT_SCREENSHOTS) {
-        break;
+        pillarErrors.overview = errorMessage(error);
+        console.warn("[ux-evaluation] overview extract failed", error);
       }
 
-      const selector = finding.elementSelector;
-      if (!selector) {
-        continue;
+      const findings: ResolvedFinding[] = [];
+      const rawByPillar: Record<string, unknown> = {};
+
+      for (const pillar of HEURISTIC_PILLARS) {
+        try {
+          const extraction = await extractStructured(
+            stagehand,
+            pillar.instruction,
+            pillarExtractionSchema,
+            { timeout: env.UX_EXTRACT_TIMEOUT_MS },
+          );
+
+          rawByPillar[pillar.category] = extraction.findings;
+
+          findings.push(
+            ...(await resolveFindings(extraction.findings, {
+              category: pillar.category,
+              pageUrl: landedUrl,
+              observed,
+              selectorExists: (selector) => elementExists(page!, selector),
+            })),
+          );
+        } catch (error) {
+          pillarErrors[pillar.category] = errorMessage(error);
+          console.warn(
+            `[ux-evaluation] extract failed for pillar ${pillar.category}`,
+            error,
+          );
+        }
       }
 
-      try {
-        const crop = await captureElementCrop(page, selector);
-        if (!crop) {
+      // Evidence crops, worst findings first, capped so a noisy page cannot
+      // flood object storage.
+      let cropped = 0;
+      for (const finding of croppableFindings(findings)) {
+        if (cropped >= env.UX_MAX_ELEMENT_SCREENSHOTS) {
+          break;
+        }
+
+        const selector = finding.elementSelector;
+        if (!selector) {
           continue;
         }
 
-        const artifact = await uploadArtifact(
-          buildScreenshotKey(
-            context.runId,
-            `${finding.category}-${cropped + 1}-${finding.title}`,
-          ),
-          crop,
-        );
+        try {
+          const crop = await captureElementCrop(page, selector);
+          if (!crop) {
+            continue;
+          }
 
-        finding.screenshotKey = artifact.key;
-        finding.screenshotUrl = artifact.url;
-        cropped += 1;
-      } catch (error) {
-        console.warn("[ux-evaluation] element crop failed", {
-          selector,
-          error,
-        });
+          const artifact = await uploadArtifact(
+            buildScreenshotKey(
+              context.runId,
+              `${finding.category}-${cropped + 1}-${finding.title}`,
+            ),
+            crop,
+          );
+
+          finding.screenshotKey = artifact.key;
+          finding.screenshotUrl = artifact.url;
+          cropped += 1;
+        } catch (error) {
+          console.warn("[ux-evaluation] element crop failed", {
+            selector,
+            error,
+          });
+        }
       }
-    }
 
-    const score = scoreFindings(findings);
-    const summary = buildExecutiveSummary(findings, {
-      url: landedUrl,
-      score,
-      pageType: overview?.pageType ?? null,
-      primaryGoal: overview?.primaryGoal ?? null,
-      overallImpression: overview?.overallImpression ?? null,
-    });
+      const score = scoreFindings(findings);
+      const summary = buildExecutiveSummary(findings, {
+        url: landedUrl,
+        score,
+        pageType: overview?.pageType ?? null,
+        primaryGoal: overview?.primaryGoal ?? null,
+        overallImpression: overview?.overallImpression ?? null,
+      });
 
-    return {
-      summary,
-      score,
-      findings: findings.map(toUxFinding),
-      screenshotKey: runScreenshot.key,
-      screenshotUrl: runScreenshot.url,
-      rawResponse: {
+      return {
+        summary,
+        score,
+        findings: findings.map(toUxFinding),
+        screenshotKey: runScreenshot.key,
+        screenshotUrl: runScreenshot.url,
+        rawResponse: {
+          mode: "live",
+          url,
+          landedUrl,
+          pageTitle,
+          model: env.STAGEHAND_MODEL,
+          overview,
+          preflight,
+          observedElements: observed.length,
+          observedActions: observed.slice(0, 40),
+          rawFindingsByPillar: rawByPillar,
+          selectorSources: findings.map((finding) => ({
+            title: finding.title,
+            selectorSource: finding.selectorSource,
+            proposedSelector: finding.proposedSelector,
+            elementSelector: finding.elementSelector,
+          })),
+          elementScreenshots: cropped,
+          ...(Object.keys(pillarErrors).length > 0 ? { pillarErrors } : {}),
+          durationMs: Date.now() - startedAt,
+          generatedAt: new Date().toISOString(),
+        },
+      };
+    } catch (error) {
+      if (error instanceof EvaluationBlockedError) {
+        throw error;
+      }
+
+      const cause = errorMessage(error);
+      console.error("[ux-evaluation] Stagehand live run blocked or failed", {
+        runId: context.runId,
+        cause,
+      });
+
+      let screenshotKey: string | null = null;
+      let screenshotUrl: string | null = null;
+
+      if (await isBrowserAlive(page)) {
+        const evidence = await captureBlockerEvidence(page, context.runId);
+        if (evidence) {
+          screenshotKey = evidence.key;
+          screenshotUrl = evidence.url;
+        }
+      }
+
+      throw new EvaluationBlockedError(BLOCKER_SUMMARY, screenshotKey, screenshotUrl, {
         mode: "live",
+        blocked: true,
         url,
-        landedUrl,
-        pageTitle,
-        model: env.STAGEHAND_MODEL,
-        overview,
+        cause,
         preflight,
-        observedElements: observed.length,
-        observedActions: observed.slice(0, 40),
-        rawFindingsByPillar: rawByPillar,
-        selectorSources: findings.map((finding) => ({
-          title: finding.title,
-          selectorSource: finding.selectorSource,
-          proposedSelector: finding.proposedSelector,
-          elementSelector: finding.elementSelector,
-        })),
-        elementScreenshots: cropped,
         ...(Object.keys(pillarErrors).length > 0 ? { pillarErrors } : {}),
+        screenshotKey,
         durationMs: Date.now() - startedAt,
         generatedAt: new Date().toISOString(),
-      },
-    };
+      });
+    }
   } catch (error) {
+    if (error instanceof EvaluationBlockedError) {
+      throw error;
+    }
+
     console.error("[ux-evaluation] Stagehand live run failed", error);
     throw error instanceof Error
       ? error

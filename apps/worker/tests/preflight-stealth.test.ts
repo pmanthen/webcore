@@ -81,6 +81,17 @@ describe("preflight configuration", () => {
     expect(options.aiFallbackEnabled).toBe(false);
   });
 
+  it("defaults AI fallback to enabled when env says true", () => {
+    expect(preflightOptionsFromEnv(fakeEnv()).aiFallbackEnabled).toBe(true);
+  });
+
+  it("treats overlays covering 40% of the viewport as blocking", async () => {
+    const { OVERLAY_COVERAGE_THRESHOLD } = await import(
+      "../src/services/browser/preflight.js"
+    );
+    expect(OVERLAY_COVERAGE_THRESHOLD).toBe(0.4);
+  });
+
   it("keeps the cookie selector list short and includes OneTrust", () => {
     expect(COOKIE_AND_POPUP_SELECTORS).toContain("#onetrust-accept-btn-handler");
     expect(COOKIE_AND_POPUP_SELECTORS).toContain("[aria-label='Close dialog']");
