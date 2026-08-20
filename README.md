@@ -99,7 +99,7 @@ import {
 | `npm run db:studio` | Open Prisma Studio |
 | `npm run build:db` | Compile `@autonomous-ux/database` |
 | `npm run dev:web` | Dev server for Next.js (`http://localhost:3000`) |
-| `npm run dev:worker` | Dev process for the worker (after Step 4) |
+| `npm run dev:worker` | BullMQ worker (Stagehand UX evaluation) |
 
 ## Web app (Step 3)
 
@@ -114,12 +114,22 @@ npm run dev:web
 - Onboard: `/dashboard/onboard`
 - API: `POST /api/evaluate` — creates `Project` + `EvaluationFeedback`, enqueues BullMQ job on `ux-evaluation`
 
+## Worker (Step 4)
+
+```bash
+npm run docker:up
+npm run db:migrate:deploy
+npm run dev:worker
+```
+
+Default `UX_EVALUATION_MODE=mock` completes jobs with sample `UxIssue[]` (no browser). Set `UX_EVALUATION_MODE=live` plus LLM / Browserbase keys to exercise Stagehand `observe()` / `act()`.
+
 ## Implementation roadmap
 
 1. **Step 1 (done):** Monorepo + Docker Compose (Postgres, Redis)
 2. **Step 2 (done):** Prisma schema + shared types (`packages/database`)
 3. **Step 3 (done):** Next.js dashboard, onboard form, `/api/evaluate`
-4. **Step 4:** BullMQ worker + Stagehand UX evaluation skeleton
+4. **Step 4 (done):** BullMQ worker + Stagehand UX evaluation skeleton
 5. **Step 5:** Terraform AWS foundation (`infra/`)
 
 ## License

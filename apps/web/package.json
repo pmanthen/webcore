@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@autonomous-ux/database": "*",
-    "bullmq": "^5.44.0",
+    "bullmq": "^6.1.2",
     "ioredis": "^5.6.0",
     "next": "^15.5.23",
     "react": "^19.0.0",
