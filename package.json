@@ -13,7 +13,9 @@
     "build": "npm run build -w @autonomous-ux/database && npm run build -w @autonomous-ux/web && npm run build -w @autonomous-ux/worker",
     "build:db": "npm run build -w @autonomous-ux/database",
     "lint": "npm run lint -w @autonomous-ux/database && npm run lint -w @autonomous-ux/web && npm run lint -w @autonomous-ux/worker",
-    "typecheck": "npm run typecheck -w @autonomous-ux/database && npm run typecheck -w @autonomous-ux/web && npm run typecheck -w @autonomous-ux/worker",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck -w @autonomous-ux/database && npm run typecheck -w @autonomous-ux/web && npm run typecheck -w @autonomous-ux/worker",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "db:generate": "npm run generate -w @autonomous-ux/database",
     "db:migrate": "npm run migrate:dev -w @autonomous-ux/database",
     "db:migrate:deploy": "npm run migrate:deploy -w @autonomous-ux/database",
@@ -27,5 +29,8 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "npm@10.9.7"
+  "packageManager": "npm@10.9.7",
+  "devDependencies": {
+    "vitest": "^4.1.11"
+  }
 }

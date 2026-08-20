@@ -1,0 +1,10 @@
+{
+  // Covers the workspace-root config files, which sit outside every package's
+  // own tsconfig. Each package is typechecked by its own project.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["vitest.config.mts"]
+}
