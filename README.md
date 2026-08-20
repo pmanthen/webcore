@@ -12,6 +12,7 @@ Full-stack TypeScript SaaS for automated UX feedback. Clients onboard a web proj
 | `infra/` | Terraform AWS foundation (VPC + ECS/Fargate placeholders) |
 | PostgreSQL | Primary data store (Prisma) |
 | Redis | BullMQ job queue |
+| MinIO | S3-compatible object store for audit artifacts (screenshots) |
 
 Phase 2 will add AWS deployment via Terraform under `infra/` (ECS/Fargate).
 
@@ -28,14 +29,16 @@ Phase 2 will add AWS deployment via Terraform under `infra/` (ECS/Fargate).
 cp .env.example .env
 npm install
 
-# 2. Start PostgreSQL and Redis
+# 2. Start PostgreSQL, Redis and MinIO
 npm run docker:up
 # or: docker compose up -d
 
 # 3. Verify services
 docker compose ps
-# postgres → healthy on localhost:5432
-# redis    → healthy on localhost:6379
+# postgres   → healthy on localhost:5432
+# redis      → healthy on localhost:6379
+# minio      → healthy on localhost:9000 (console on localhost:9001)
+# minio-init → Exited (0) after creating the `ux-artifacts` bucket
 
 # 4. Apply database migrations (Prisma)
 npm run db:migrate:deploy
@@ -68,8 +71,23 @@ Copy `.env.example` to `.env` at the **repo root**. That single file is loaded b
 | `REDIS_URL` | BullMQ → Redis | `redis://localhost:6379` |
 | `POSTGRES_*` | Compose Postgres credentials/ports | see `.env.example` |
 | `UX_EVALUATION_MODE` | Worker `mock` \| `live` | `mock` |
+| `MINIO_ENDPOINT` | MinIO host for worker uploads + web proxy | `localhost` |
+| `MINIO_PORT` | MinIO S3 API port | `9000` |
+| `MINIO_CONSOLE_PORT` | MinIO web console port | `9001` |
+| `MINIO_USE_SSL` | `true` \| `false` | `false` |
+| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | Compose MinIO credentials | `minioadmin` |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | App-side MinIO credentials | `minioadmin` |
+| `MINIO_BUCKET` | Artifact bucket, created by `minio-init` | `ux-artifacts` |
+| `MINIO_PUBLIC_URL` | Base URL for direct artifact links (debugging) | `http://localhost:9000` |
 
-When `web` / `worker` later run as Compose services, use the internal hostnames `postgres` and `redis` on the `ux-eval-network` bridge network instead of `localhost`.
+When `web` / `worker` later run as Compose services, use the internal hostnames `postgres`, `redis`, and `minio` on the `ux-eval-network` bridge network instead of `localhost`.
+
+### Object storage
+
+The `ux-artifacts` bucket stays **private**. The worker uploads screenshots and stores the
+object key on the row; the web app streams them back through `GET /api/artifacts/<key>`,
+so the browser never needs MinIO credentials or a public bucket policy. The MinIO console
+(`http://localhost:9001`) is exposed for local inspection only.
 
 ## Shared database package
 
@@ -79,8 +97,13 @@ When `web` / `worker` later run as Compose services, use the internal hostnames 
 import {
   prisma,
   UX_EVALUATION_QUEUE_NAME,
-  parseUxIssues,
-  type UxIssue,
+  ISSUE_CATEGORIES,
+  ISSUE_SEVERITIES,
+  normalizeSeverity,
+  summarizeSeverities,
+  type IssueCategory,
+  type IssueSeverity,
+  type UxFinding,
   type UxEvaluationJobData,
   type ProjectStatus,
 } from "@autonomous-ux/database";
@@ -90,13 +113,21 @@ import {
 |-------|---------|
 | `Client` | Tenant / account |
 | `Project` | Target URL + `ProjectStatus` |
-| `EvaluationFeedback` | UX issues (`UxIssue[]` JSON), score, optional raw agent payload |
+| `EvaluationRun` | One audit pass: status, summary, score, run screenshot, raw agent payload |
+| `EvaluationFeedback` | **One row per UX finding**: category, severity, description, recommendation, screenshot, element selector |
+
+Findings use a fixed triage taxonomy stored as plain strings:
+
+| Field | Values |
+|-------|--------|
+| `category` | `Accessibility`, `Cognitive Load`, `Friction` |
+| `severity` | `Low`, `Medium`, `High` |
 
 ## Workspace scripts
 
 | Script | Description |
 |--------|-------------|
-| `npm run docker:up` | Start Postgres + Redis |
+| `npm run docker:up` | Start Postgres + Redis + MinIO |
 | `npm run docker:down` | Stop Compose stack |
 | `npm run docker:logs` | Tail Compose logs |
 | `npm run db:generate` | Generate Prisma Client |
@@ -119,7 +150,17 @@ Root `.env` is loaded automatically (optional overrides in `apps/web/.env.local`
 
 - Dashboard: `/dashboard` (sidebar + project list)
 - Onboard: `/dashboard/onboard`
-- API: `POST /api/evaluate` — creates `Project` + `EvaluationFeedback`, enqueues BullMQ job on `ux-evaluation`
+- Triage: `/projects/[projectId]/results` (add `?run=<id>` to view an earlier run)
+- API: `POST /api/evaluate` — creates `Project` + `EvaluationRun`, enqueues BullMQ job on `ux-evaluation`
+- API: `GET /api/artifacts/<key>` — streams a screenshot out of the private MinIO bucket
+
+### Triage dashboard
+
+The results page shows the aggregate score as a gauge, the executive summary, and a
+severity breakdown, then a filterable grid of findings. Category and severity filters,
+free-text search, the screenshot modal, and the selector inspector are all client-side
+with `useState`/`useMemo` — no state library. Screenshots are rendered through the
+`/api/artifacts` proxy, so the MinIO bucket stays private.
 
 ## Worker (Step 4)
 
@@ -129,7 +170,16 @@ npm run db:migrate:deploy
 npm run dev:worker
 ```
 
-Default `UX_EVALUATION_MODE=mock` completes jobs with sample `UxIssue[]` (no browser). Set `UX_EVALUATION_MODE=live` plus LLM / Browserbase keys to exercise Stagehand `observe()` / `act()`.
+Default `UX_EVALUATION_MODE=mock` completes jobs with sample findings (no browser). Set
+`UX_EVALUATION_MODE=live` plus an LLM key to run the real audit: navigate, full-page
+screenshot to MinIO, `observe()` the interactable elements, then one `extract()` per
+heuristic pillar (Accessibility, Cognitive Load, Friction) against a strict Zod schema,
+plus element crops for the findings that warrant evidence. See
+[`apps/worker/README.md`](apps/worker/README.md) for the pipeline, scoring model, and the
+`dev/` harness that runs the whole thing offline without an LLM account.
+
+The job payload on `ux-evaluation` is `{ projectId, runId, url, clientId }`, and the BullMQ
+job id equals `runId` so a run is always traceable back to its job.
 
 ## Implementation roadmap
 
@@ -138,6 +188,8 @@ Default `UX_EVALUATION_MODE=mock` completes jobs with sample `UxIssue[]` (no bro
 3. **Step 3 (done):** Next.js dashboard, onboard form, `/api/evaluate`
 4. **Step 4 (done):** BullMQ worker + Stagehand UX evaluation skeleton
 5. **Step 5 (done):** Terraform AWS foundation (`infra/`)
+6. **Step 6 (done):** Core intelligence engine — MinIO artifacts, per-finding schema,
+   Stagehand `observe()` / `extract()` heuristic pipeline, triage dashboard
 
 ## AWS / Terraform (Step 5)
 

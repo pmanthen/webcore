@@ -6,6 +6,8 @@
 import type {
   Client,
   EvaluationFeedback,
+  EvaluationRun,
+  EvaluationRunStatus,
   Project,
   ProjectStatus,
 } from "@prisma/client";
@@ -13,54 +15,131 @@ import type {
 export type {
   Client,
   EvaluationFeedback,
+  EvaluationRun,
+  EvaluationRunStatus,
   Project,
   ProjectStatus,
 };
 
-/** Severity of a single UX finding. */
-export type UxIssueSeverity = "critical" | "major" | "minor" | "suggestion";
-
-/** Category used to group UX findings in the UI and reports. */
-export type UxIssueCategory =
-  | "accessibility"
-  | "usability"
-  | "visual_design"
-  | "performance"
-  | "content"
-  | "navigation"
-  | "forms"
-  | "mobile"
-  | "other";
-
 /**
- * A single UX issue identified by the AI agent.
- * Stored in `EvaluationFeedback.issues` as a JSON array.
+ * Severity of a single UX finding, stored as a plain string on
+ * `EvaluationFeedback.severity` so LLM output can be persisted without a
+ * migration whenever the taxonomy is tuned.
  */
-export interface UxIssue {
-  id: string;
-  title: string;
-  description: string;
-  severity: UxIssueSeverity;
-  category: UxIssueCategory;
-  /** CSS selector, ARIA role, or other locator when available. */
-  selector?: string;
-  /** Page URL where the issue was observed (may differ from project root URL). */
-  pageUrl?: string;
-  recommendation?: string;
+export type IssueSeverity = "Low" | "Medium" | "High";
+
+/** Heuristic buckets the Stagehand audit reports against. */
+export type IssueCategory = "Accessibility" | "Cognitive Load" | "Friction";
+
+export const ISSUE_SEVERITIES: readonly IssueSeverity[] = [
+  "High",
+  "Medium",
+  "Low",
+];
+
+export const ISSUE_CATEGORIES: readonly IssueCategory[] = [
+  "Accessibility",
+  "Cognitive Load",
+  "Friction",
+];
+
+/** Sort weight so High-severity findings surface first in the triage list. */
+export const SEVERITY_RANK: Record<IssueSeverity, number> = {
+  High: 0,
+  Medium: 1,
+  Low: 2,
+};
+
+export function isIssueSeverity(value: unknown): value is IssueSeverity {
+  return (
+    typeof value === "string" &&
+    ISSUE_SEVERITIES.includes(value as IssueSeverity)
+  );
 }
 
-/** Payload written by the worker when an evaluation completes. */
-export interface EvaluationResultPayload {
+export function isIssueCategory(value: unknown): value is IssueCategory {
+  return (
+    typeof value === "string" &&
+    ISSUE_CATEGORIES.includes(value as IssueCategory)
+  );
+}
+
+/**
+ * Coerce a free-form severity string (LLM output, legacy row) into the
+ * canonical set. Unknown values fall back to `Medium` rather than throwing so a
+ * single odd finding never fails a whole audit.
+ */
+export function normalizeSeverity(value: unknown): IssueSeverity {
+  if (typeof value !== "string") {
+    return "Medium";
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "high":
+    case "critical":
+    case "blocker":
+      return "High";
+    case "low":
+    case "minor":
+    case "suggestion":
+      return "Low";
+    default:
+      return "Medium";
+  }
+}
+
+/** Coerce a free-form category string into the canonical set. */
+export function normalizeCategory(value: unknown): IssueCategory {
+  if (typeof value !== "string") {
+    return "Friction";
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  if (normalized.startsWith("access") || normalized === "a11y") {
+    return "Accessibility";
+  }
+  if (normalized.includes("cognitive") || normalized.includes("load")) {
+    return "Cognitive Load";
+  }
+  return "Friction";
+}
+
+/**
+ * A single UX finding as produced by the agent, before it becomes an
+ * `EvaluationFeedback` row.
+ */
+export interface UxFinding {
+  category: IssueCategory;
+  severity: IssueSeverity;
+  title: string;
+  description: string;
+  recommendation: string;
+  /** CSS selector, ARIA role, or other locator when available. */
+  elementSelector?: string | null;
+  /** Page URL where the issue was observed (may differ from the project root). */
+  pageUrl?: string | null;
+  /** MinIO object key for the screenshot evidencing this finding. */
+  screenshotKey?: string | null;
+  /** Browsable URL derived from `screenshotKey`. */
+  screenshotUrl?: string | null;
+}
+
+/** Payload written by the worker when an audit run completes. */
+export interface EvaluationRunResult {
   summary: string;
   score: number | null;
-  issues: UxIssue[];
+  findings: UxFinding[];
+  /** Full-page screenshot for the run. */
+  screenshotKey?: string | null;
+  screenshotUrl?: string | null;
   rawResponse?: Record<string, unknown>;
 }
 
 /** Job data enqueued by the web API onto the BullMQ `ux-evaluation` queue. */
 export interface UxEvaluationJobData {
   projectId: string;
-  evaluationId: string;
+  /** `EvaluationRun.id` — also used as the BullMQ job id. */
+  runId: string;
   url: string;
   clientId: string;
 }
@@ -72,87 +151,48 @@ export type ProjectWithClient = Project & {
   client: Client;
 };
 
-/** Project with evaluation history. */
-export type ProjectWithEvaluations = Project & {
-  evaluations: EvaluationFeedback[];
+/** Project with audit run history. */
+export type ProjectWithRuns = Project & {
+  runs: EvaluationRun[];
 };
 
-/** Evaluation feedback with parsed, typed issues. */
-export interface EvaluationFeedbackWithIssues
-  extends Omit<EvaluationFeedback, "issues"> {
-  issues: UxIssue[];
-}
+/** An audit run together with the findings it produced. */
+export type EvaluationRunWithFindings = EvaluationRun & {
+  findings: EvaluationFeedback[];
+};
 
 /**
- * Narrow unknown JSON from Prisma into typed UX issues.
- * Invalid entries are dropped rather than throwing, so API responses stay resilient.
+ * `EvaluationFeedback` narrowed to the canonical category/severity unions, which
+ * Prisma models as plain `string`.
  */
-export function parseUxIssues(value: unknown): UxIssue[] {
-  if (!Array.isArray(value)) {
-    return [];
+export type TypedEvaluationFeedback = Omit<
+  EvaluationFeedback,
+  "category" | "severity"
+> & {
+  category: IssueCategory;
+  severity: IssueSeverity;
+};
+
+/** Narrow raw rows from Prisma into findings with canonical enums. */
+export function toTypedFeedback(
+  row: EvaluationFeedback,
+): TypedEvaluationFeedback {
+  return {
+    ...row,
+    category: normalizeCategory(row.category),
+    severity: normalizeSeverity(row.severity),
+  };
+}
+
+/** Count of findings per severity, used by the dashboard summary cards. */
+export type SeverityBreakdown = Record<IssueSeverity, number>;
+
+export function summarizeSeverities(
+  findings: readonly { severity: string }[],
+): SeverityBreakdown {
+  const breakdown: SeverityBreakdown = { High: 0, Medium: 0, Low: 0 };
+  for (const finding of findings) {
+    breakdown[normalizeSeverity(finding.severity)] += 1;
   }
-
-  const severities: readonly UxIssueSeverity[] = [
-    "critical",
-    "major",
-    "minor",
-    "suggestion",
-  ];
-  const categories: readonly UxIssueCategory[] = [
-    "accessibility",
-    "usability",
-    "visual_design",
-    "performance",
-    "content",
-    "navigation",
-    "forms",
-    "mobile",
-    "other",
-  ];
-
-  const issues: UxIssue[] = [];
-
-  for (const item of value) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-
-    const record = item as Record<string, unknown>;
-    const severity = record.severity;
-    const category = record.category;
-
-    if (
-      typeof record.id !== "string" ||
-      typeof record.title !== "string" ||
-      typeof record.description !== "string" ||
-      typeof severity !== "string" ||
-      typeof category !== "string" ||
-      !severities.includes(severity as UxIssueSeverity) ||
-      !categories.includes(category as UxIssueCategory)
-    ) {
-      continue;
-    }
-
-    const issue: UxIssue = {
-      id: record.id,
-      title: record.title,
-      description: record.description,
-      severity: severity as UxIssueSeverity,
-      category: category as UxIssueCategory,
-    };
-
-    if (typeof record.selector === "string") {
-      issue.selector = record.selector;
-    }
-    if (typeof record.pageUrl === "string") {
-      issue.pageUrl = record.pageUrl;
-    }
-    if (typeof record.recommendation === "string") {
-      issue.recommendation = record.recommendation;
-    }
-
-    issues.push(issue);
-  }
-
-  return issues;
+  return breakdown;
 }

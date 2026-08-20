@@ -9,7 +9,7 @@ export type ProjectListItem = Pick<
   "id" | "name" | "url" | "status" | "createdAt" | "updatedAt"
 > & {
   client: { id: string; name: string };
-  _count: { evaluations: number };
+  _count: { runs: number; evaluations: number };
 };
 
 export async function listProjects(): Promise<ProjectListItem[]> {
@@ -23,7 +23,7 @@ export async function listProjects(): Promise<ProjectListItem[]> {
       createdAt: true,
       updatedAt: true,
       client: { select: { id: true, name: true } },
-      _count: { select: { evaluations: true } },
+      _count: { select: { runs: true, evaluations: true } },
     },
   });
 }

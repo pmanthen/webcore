@@ -1,7 +1,10 @@
 import {
+  normalizeCategory,
+  normalizeSeverity,
   prisma,
   UX_EVALUATION_QUEUE_NAME,
   type UxEvaluationJobData,
+  type UxFinding,
 } from "@autonomous-ux/database";
 import { Prisma } from "@prisma/client";
 import { Worker, type Job } from "bullmq";
@@ -13,7 +16,7 @@ import { runUxEvaluation } from "../services/ux-evaluation.js";
 
 const jobDataSchema = z.object({
   projectId: z.string().min(1),
-  evaluationId: z.string().min(1),
+  runId: z.string().min(1),
   url: z.string().url(),
   clientId: z.string().min(1),
 });
@@ -45,7 +48,7 @@ function isFinalAttempt(
 
 async function markEvaluationFailed(
   projectId: string,
-  evaluationId: string,
+  runId: string,
   jobId: string | undefined,
   message: string,
 ): Promise<void> {
@@ -54,15 +57,15 @@ async function markEvaluationFailed(
       where: { id: projectId },
       data: { status: "FAILED" },
     }),
-    prisma.evaluationFeedback.update({
-      where: { id: evaluationId },
+    prisma.evaluationRun.update({
+      where: { id: runId },
       data: {
+        status: "FAILED",
         summary: `Evaluation failed: ${message}`,
-        issues: [] as Prisma.InputJsonValue,
-        rawResponse: {
-          error: message,
-        } as Prisma.InputJsonValue,
-        jobId: jobId ?? evaluationId,
+        error: message,
+        finishedAt: new Date(),
+        rawResponse: { error: message } as Prisma.InputJsonValue,
+        jobId: jobId ?? runId,
       },
     }),
   ]);
@@ -83,26 +86,21 @@ async function markFailedFromUnknownJobData(
   const record = data as Record<string, unknown>;
   if (
     typeof record.projectId !== "string" ||
-    typeof record.evaluationId !== "string"
+    typeof record.runId !== "string"
   ) {
     return;
   }
 
   try {
-    await markEvaluationFailed(
-      record.projectId,
-      record.evaluationId,
-      jobId,
-      message,
-    );
+    await markEvaluationFailed(record.projectId, record.runId, jobId, message);
   } catch (error) {
     console.error("[worker] failed to persist FAILED status", error);
   }
 }
 
 async function assertJobOwnership(data: ParsedJobData): Promise<void> {
-  const evaluation = await prisma.evaluationFeedback.findUnique({
-    where: { id: data.evaluationId },
+  const run = await prisma.evaluationRun.findUnique({
+    where: { id: data.runId },
     select: {
       id: true,
       projectId: true,
@@ -110,21 +108,41 @@ async function assertJobOwnership(data: ParsedJobData): Promise<void> {
     },
   });
 
-  if (!evaluation) {
-    throw new Error(`Evaluation ${data.evaluationId} not found`);
+  if (!run) {
+    throw new Error(`Evaluation run ${data.runId} not found`);
   }
 
-  if (evaluation.projectId !== data.projectId) {
+  if (run.projectId !== data.projectId) {
     throw new Error(
-      `Evaluation ${data.evaluationId} does not belong to project ${data.projectId}`,
+      `Evaluation run ${data.runId} does not belong to project ${data.projectId}`,
     );
   }
 
-  if (evaluation.project.clientId !== data.clientId) {
+  if (run.project.clientId !== data.clientId) {
     throw new Error(
       `Project ${data.projectId} does not belong to client ${data.clientId}`,
     );
   }
+}
+
+function toFeedbackRows(
+  findings: readonly UxFinding[],
+  projectId: string,
+  runId: string,
+): Prisma.EvaluationFeedbackCreateManyInput[] {
+  return findings.map((finding) => ({
+    projectId,
+    runId,
+    category: normalizeCategory(finding.category),
+    severity: normalizeSeverity(finding.severity),
+    title: finding.title,
+    description: finding.description,
+    recommendation: finding.recommendation,
+    elementSelector: finding.elementSelector ?? null,
+    pageUrl: finding.pageUrl ?? null,
+    screenshotKey: finding.screenshotKey ?? null,
+    screenshotUrl: finding.screenshotUrl ?? null,
+  }));
 }
 
 async function processEvaluationJob(
@@ -143,12 +161,12 @@ async function processEvaluationJob(
     throw new Error(message);
   }
 
-  const { projectId, evaluationId, url } = parsed.data;
+  const { projectId, runId, url } = parsed.data;
 
   console.info("[worker] starting evaluation", {
     jobId: job.id,
     projectId,
-    evaluationId,
+    runId,
     url,
     attempt: job.attemptsMade + 1,
   });
@@ -156,23 +174,43 @@ async function processEvaluationJob(
   try {
     await assertJobOwnership(parsed.data);
 
-    await prisma.project.update({
-      where: { id: projectId },
-      data: { status: "RUNNING" },
-    });
+    await prisma.$transaction([
+      prisma.project.update({
+        where: { id: projectId },
+        data: { status: "RUNNING" },
+      }),
+      prisma.evaluationRun.update({
+        where: { id: runId },
+        data: {
+          status: "RUNNING",
+          startedAt: new Date(),
+          error: null,
+          jobId: job.id ?? runId,
+        },
+      }),
+    ]);
 
-    const result = await runUxEvaluation(url);
+    const result = await runUxEvaluation(url, { runId });
 
     await prisma.$transaction([
-      prisma.evaluationFeedback.update({
-        where: { id: evaluationId },
+      // Retries re-run the audit from scratch, so clear findings from the
+      // previous attempt instead of accumulating duplicates.
+      prisma.evaluationFeedback.deleteMany({ where: { runId } }),
+      prisma.evaluationFeedback.createMany({
+        data: toFeedbackRows(result.findings, projectId, runId),
+      }),
+      prisma.evaluationRun.update({
+        where: { id: runId },
         data: {
+          status: "COMPLETED",
           summary: result.summary,
           score: result.score,
-          issues: result.issues as unknown as Prisma.InputJsonValue,
+          screenshotKey: result.screenshotKey ?? null,
+          screenshotUrl: result.screenshotUrl ?? null,
           rawResponse: (result.rawResponse ??
             Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
-          jobId: job.id ?? evaluationId,
+          jobId: job.id ?? runId,
+          finishedAt: new Date(),
         },
       }),
       prisma.project.update({
@@ -184,14 +222,14 @@ async function processEvaluationJob(
     console.info("[worker] evaluation completed", {
       jobId: job.id,
       projectId,
-      issueCount: result.issues.length,
+      findingCount: result.findings.length,
       score: result.score,
     });
 
     return {
       projectId,
-      evaluationId,
-      issueCount: result.issues.length,
+      runId,
+      findingCount: result.findings.length,
       score: result.score,
     };
   } catch (error) {
@@ -200,7 +238,7 @@ async function processEvaluationJob(
 
     // Only persist FAILED on the last attempt so retries can recover cleanly.
     if (isFinalAttempt(job)) {
-      await markEvaluationFailed(projectId, evaluationId, job.id, message);
+      await markEvaluationFailed(projectId, runId, job.id, message);
     } else {
       console.warn("[worker] attempt failed; will retry", {
         jobId: job.id,
@@ -216,8 +254,8 @@ async function processEvaluationJob(
 
 interface EvaluationJobResult {
   projectId: string;
-  evaluationId: string;
-  issueCount: number;
+  runId: string;
+  findingCount: number;
   score: number | null;
 }
 

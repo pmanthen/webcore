@@ -18,6 +18,13 @@ enum ProjectStatus {
   FAILED
 }
 
+enum EvaluationRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 /// Tenant / account that owns projects under evaluation.
 model Client {
   id        String   @id @default(cuid())
@@ -41,34 +48,79 @@ model Project {
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
-  client       Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  evaluations  EvaluationFeedback[]
+  client      Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  runs        EvaluationRun[]
+  evaluations EvaluationFeedback[]
 
   @@index([clientId])
   @@index([status])
   @@map("projects")
 }
 
-/// Structured UX findings produced by the AI agent worker for a project.
-model EvaluationFeedback {
-  id           String   @id @default(cuid())
-  projectId    String   @map("project_id")
-  /// Short human-readable overview of the evaluation run.
-  summary      String?
+/// One autonomous audit pass (one BullMQ job) over a project's URL.
+/// Holds the run-level summary that used to live on `EvaluationFeedback`.
+model EvaluationRun {
+  id            String              @id @default(cuid())
+  projectId     String              @map("project_id")
+  status        EvaluationRunStatus @default(QUEUED)
+  /// Short human-readable overview of the audit.
+  summary       String?
   /// Overall UX score from 0–100 when available.
-  score        Float?
-  /// Typed list of UX issues (see UxIssue in @autonomous-ux/database).
-  issues       Json     @default("[]")
-  /// Optional raw agent / Stagehand payload for debugging.
-  rawResponse  Json?    @map("raw_response")
-  /// BullMQ job id that produced this feedback, when applicable.
-  jobId        String?  @map("job_id")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  score         Float?
+  /// MinIO object key for the full-page screenshot captured for this run.
+  screenshotKey String?             @map("screenshot_key")
+  /// Browsable URL for the run screenshot (web proxy or direct MinIO URL).
+  screenshotUrl String?             @map("screenshot_url")
+  /// Raw Stagehand observe()/extract() payload, kept for debugging.
+  rawResponse   Json?               @map("raw_response")
+  /// BullMQ job id that produced this run.
+  jobId         String?             @map("job_id")
+  error         String?
+  startedAt     DateTime?           @map("started_at")
+  finishedAt    DateTime?           @map("finished_at")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project  Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  findings EvaluationFeedback[]
 
   @@index([projectId])
   @@index([jobId])
+  @@index([status])
+  @@map("evaluation_runs")
+}
+
+/// A single actionable UX finding produced by the Stagehand audit.
+/// One row per issue, so the triage dashboard can filter and sort directly in SQL.
+model EvaluationFeedback {
+  id              String   @id @default(cuid())
+  projectId       String   @map("project_id")
+  runId           String?  @map("run_id")
+  /// 'Accessibility' | 'Cognitive Load' | 'Friction' (see IssueCategory).
+  category        String
+  /// 'Low' | 'Medium' | 'High' (see IssueSeverity).
+  severity        String
+  title           String
+  description     String
+  /// Concrete fix suggested by the agent.
+  recommendation  String
+  /// Browsable URL for the screenshot evidencing this issue.
+  screenshotUrl   String?  @map("screenshot_url")
+  /// MinIO object key backing `screenshotUrl`.
+  screenshotKey   String?  @map("screenshot_key")
+  /// CSS selector / ARIA locator of the offending element, when known.
+  elementSelector String?  @map("element_selector")
+  /// Page URL where the issue was observed (may differ from the project root URL).
+  pageUrl         String?  @map("page_url")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  project Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run     EvaluationRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([runId])
+  @@index([projectId, category])
+  @@index([projectId, severity])
   @@map("evaluation_feedback")
 }

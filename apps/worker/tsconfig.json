@@ -3,6 +3,9 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
+    // DOM is needed to type the callbacks handed to page.evaluate(), which are
+    // serialized and run inside the browser rather than in this Node process.
+    "lib": ["ES2022", "DOM"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
