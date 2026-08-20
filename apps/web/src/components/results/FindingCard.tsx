@@ -23,14 +23,16 @@ export function FindingCard({
           onClick={() =>
             onPreview(finding.screenshotKey as string, finding.title)
           }
-          className="group block max-h-52 overflow-hidden border-b border-[color:var(--line)] bg-white"
+          className="group flex h-40 items-center justify-center overflow-hidden border-b border-[color:var(--line)] bg-white p-2"
           aria-label={`Enlarge screenshot for: ${finding.title}`}
         >
+          {/* Element crops vary wildly in aspect ratio, so contain the whole
+              thing rather than cover-cropping a slice of the evidence. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={artifactUrl(finding.screenshotKey)}
             alt={`Screenshot of the element behind: ${finding.title}`}
-            className="w-full object-cover object-top transition duration-300 group-hover:scale-[1.02]"
+            className="max-h-full max-w-full object-contain transition duration-300 group-hover:scale-[1.02]"
             loading="lazy"
           />
         </button>
