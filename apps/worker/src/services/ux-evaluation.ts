@@ -36,6 +36,9 @@ function buildStagehandOptions(): V3Options {
  * 2. Navigate to the target URL
  * 3. Use `observe()` / `act()` primitives to probe the page
  * 4. Return a structured evaluation payload (mock issues for Phase 1)
+ *
+ * Live-mode browser/LLM failures propagate to the worker so the project is
+ * marked FAILED (after retries), instead of being reported as COMPLETED.
  */
 export async function runUxEvaluation(
   url: string,
@@ -61,12 +64,10 @@ export async function runUxEvaluation(
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
-    // Probe interactive affordances without mutating the page yet.
     observedActions = await stagehand.observe(
       "Find the primary navigation links and the main call-to-action button",
     );
 
-    // Optional: exercise the first observed action when Stagehand returns one.
     const firstAction = observedActions[0];
     if (firstAction) {
       try {
@@ -85,17 +86,10 @@ export async function runUxEvaluation(
       note: "Live Stagehand browse completed; UX issue list is still a scaffold.",
     });
   } catch (error) {
-    console.error(
-      "[ux-evaluation] Stagehand live run failed; falling back to mock payload",
-      error,
-    );
-    return buildMockEvaluationResult(url, {
-      mode: "live",
-      observedActions,
-      note: `Stagehand error fallback: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
-    });
+    console.error("[ux-evaluation] Stagehand live run failed", error);
+    throw error instanceof Error
+      ? error
+      : new Error("Stagehand live evaluation failed");
   } finally {
     try {
       await stagehand.close();

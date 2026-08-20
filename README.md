@@ -55,13 +55,18 @@ npm run docker:logs
 
 ## Environment variables
 
-Copy `.env.example` to `.env`. Key variables:
+Copy `.env.example` to `.env` at the **repo root**. That single file is loaded by:
+
+- Prisma (`npm run db:*` via `dotenv-cli`)
+- Next.js (`npm run dev:web` — root `.env`, optionally overridden by `apps/web/.env.local`)
+- Worker (`npm run dev:worker` — `--env-file=../../.env`)
 
 | Variable | Purpose | Local default |
 |----------|---------|---------------|
 | `DATABASE_URL` | Prisma → PostgreSQL | `postgresql://uxeval:uxeval@localhost:5432/uxeval?schema=public` |
 | `REDIS_URL` | BullMQ → Redis | `redis://localhost:6379` |
 | `POSTGRES_*` | Compose Postgres credentials/ports | see `.env.example` |
+| `UX_EVALUATION_MODE` | Worker `mock` \| `live` | `mock` |
 
 When `web` / `worker` later run as Compose services, use the internal hostnames `postgres` and `redis` on the `ux-eval-network` bridge network instead of `localhost`.
 
@@ -106,9 +111,10 @@ import {
 ```bash
 npm run docker:up
 npm run db:migrate:deploy
-cp .env.example apps/web/.env.local   # or reuse root values
 npm run dev:web
 ```
+
+Root `.env` is loaded automatically (optional overrides in `apps/web/.env.local`).
 
 - Dashboard: `/dashboard` (sidebar + project list)
 - Onboard: `/dashboard/onboard`

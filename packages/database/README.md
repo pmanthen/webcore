@@ -24,10 +24,10 @@ import {
 
 ## Commands
 
-From the repo root (requires `DATABASE_URL` and a running Postgres):
+From the repo root (requires `DATABASE_URL` in the **repo-root** `.env`):
 
 ```bash
 npm run db:generate   # prisma generate
-npm run db:migrate    # prisma migrate dev
+npm run db:migrate    # prisma migrate dev (loads ../../.env)
 npm run db:studio     # Prisma Studio
 ```
