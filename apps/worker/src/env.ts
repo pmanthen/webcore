@@ -28,8 +28,8 @@ const envSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().int().positive().default(1),
 
   // Audit tuning.
-  UX_VIEWPORT_WIDTH: z.coerce.number().int().positive().default(1440),
-  UX_VIEWPORT_HEIGHT: z.coerce.number().int().positive().default(900),
+  UX_VIEWPORT_WIDTH: z.coerce.number().int().positive().default(1920),
+  UX_VIEWPORT_HEIGHT: z.coerce.number().int().positive().default(1080),
   UX_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
   UX_EXTRACT_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
   /** Cap on element crops per run, so a noisy page cannot flood object storage. */
@@ -38,6 +38,60 @@ const envSchema = z.object({
     .int()
     .nonnegative()
     .default(8),
+
+  // Stealth / anti-bot headers applied to every browser context.
+  UX_USER_AGENT: z
+    .string()
+    .min(1)
+    .default(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    ),
+  UX_ACCEPT_LANGUAGE: z.string().min(1).default("en-US,en;q=0.9"),
+
+  /**
+   * Directory for Stagehand act() selector caching. Successful act() results are
+   * reused on subsequent runs against the same URL shape, skipping the LLM.
+   */
+  STAGEHAND_CACHE_DIR: z.string().min(1).default(".stagehand-cache"),
+
+  // Pre-flight page stabilization (deterministic, before any AI primitive).
+  /** Soft wait for networkidle after navigation; never fails the run. */
+  UX_NETWORK_IDLE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15_000),
+  /** Per-selector budget when probing cookie/popup dismiss controls. */
+  UX_PREFLIGHT_CLICK_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(500),
+  /** Pause between lazy-load scroll steps. */
+  UX_PREFLIGHT_SCROLL_PAUSE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(120),
+  /** Hard wall-clock budget for the entire lazy-load scroll pass. */
+  UX_PREFLIGHT_MAX_SCROLL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(4_000),
+  /**
+   * When a large overlay survives deterministic clicks, run a scoped Stagehand
+   * act() to dismiss cookies / newsletter popups.
+   */
+  UX_PREFLIGHT_AI_FALLBACK: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  UX_PREFLIGHT_AI_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15_000),
 
   // MinIO / S3-compatible object storage for screenshots.
   MINIO_ENDPOINT: z.string().min(1).default("localhost"),

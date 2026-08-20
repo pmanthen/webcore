@@ -8,6 +8,16 @@ import type { EvaluationRunResult, UxFinding } from "@autonomous-ux/database";
 
 import { getEnv } from "../env.js";
 import {
+  preflightOptionsFromEnv,
+  runPreflightCleanup,
+  type PreflightReport,
+} from "./browser/preflight.js";
+import {
+  applyStealthContext,
+  buildBrowserbaseStealthParams,
+  buildStealthLaunchOptions,
+} from "./browser/stealth.js";
+import {
   HEURISTIC_PILLARS,
   pageOverviewSchema,
   pillarExtractionSchema,
@@ -55,18 +65,17 @@ function buildStagehandOptions(): V3Options {
     env: env.STAGEHAND_ENV,
     model: buildModelConfiguration(),
     verbose: env.STAGEHAND_VERBOSE as 0 | 1 | 2,
-    localBrowserLaunchOptions: {
-      headless: true,
-      viewport: {
-        width: env.UX_VIEWPORT_WIDTH,
-        height: env.UX_VIEWPORT_HEIGHT,
-      },
-    },
+    // Persist successful act() selectors so repeated dismissals / interactions
+    // against the same URL shape skip the LLM on later runs.
+    cacheDir: env.STAGEHAND_CACHE_DIR,
+    localBrowserLaunchOptions: buildStealthLaunchOptions(env),
   };
 
   if (env.STAGEHAND_ENV === "BROWSERBASE") {
     options.apiKey = env.BROWSERBASE_API_KEY;
     options.projectId = env.BROWSERBASE_PROJECT_ID;
+    options.browserbaseSessionCreateParams =
+      buildBrowserbaseStealthParams(env);
   }
 
   return options;
@@ -117,12 +126,14 @@ function croppableFindings(
 /**
  * Heuristic UX audit driven by Stagehand.
  *
- * 1. Navigate to the target URL.
- * 2. Capture and store a full-page screenshot.
- * 3. `observe()` the interactable elements, giving later steps real selectors.
- * 4. `extract()` once per heuristic pillar against a strict Zod schema.
- * 5. Crop and store evidence for the findings that warrant it.
- * 6. Score the page and write an executive summary.
+ * 1. Launch Chromium with stealth args / headers (or Browserbase advanced stealth).
+ * 2. Navigate to the target URL.
+ * 3. Deterministic pre-flight: network settle, lazy-load scroll, cookie/popup dismissal.
+ * 4. Capture and store a full-page screenshot.
+ * 5. `observe()` the interactable elements, giving later steps real selectors.
+ * 6. `extract()` once per heuristic pillar against a strict Zod schema.
+ * 7. Crop and store evidence for the findings that warrant it.
+ * 8. Score the page and write an executive summary.
  *
  * Navigation and browser failures propagate so the worker marks the run FAILED.
  * A single pillar or screenshot failing is logged and skipped — a partial audit
@@ -144,6 +155,7 @@ export async function runUxEvaluation(
   const startedAt = Date.now();
   const stagehand = new Stagehand(buildStagehandOptions());
   const pillarErrors: Record<string, string> = {};
+  let preflight: PreflightReport | null = null;
 
   try {
     await stagehand.init();
@@ -151,7 +163,8 @@ export async function runUxEvaluation(
     const page =
       stagehand.context.activePage() ?? (await stagehand.context.newPage());
 
-    await page.setViewportSize(env.UX_VIEWPORT_WIDTH, env.UX_VIEWPORT_HEIGHT);
+    await applyStealthContext(stagehand, page, env);
+
     const response = await page.goto(url, {
       waitUntil: "load",
       timeoutMs: env.UX_NAV_TIMEOUT_MS,
@@ -161,11 +174,26 @@ export async function runUxEvaluation(
     assertNavigationSucceeded(url, landedUrl, response);
     const pageTitle = await page.title().catch(() => "");
 
+    try {
+      preflight = await runPreflightCleanup(
+        page,
+        stagehand,
+        preflightOptionsFromEnv(env),
+      );
+      console.info("[ux-evaluation] preflight complete", {
+        runId: context.runId,
+        ...preflight,
+      });
+    } catch (error) {
+      // Pre-flight is best-effort: never abort an otherwise reachable page.
+      pillarErrors.preflight = errorMessage(error);
+      console.warn("[ux-evaluation] preflight failed; continuing", error);
+    }
+
     const runScreenshot = await uploadArtifact(
       buildScreenshotKey(context.runId, "full-page"),
       await captureFullPage(page),
     );
-
     let observed: Action[] = [];
     try {
       observed = await stagehand.observe(OBSERVE_INSTRUCTION, {
@@ -280,6 +308,7 @@ export async function runUxEvaluation(
         pageTitle,
         model: env.STAGEHAND_MODEL,
         overview,
+        preflight,
         observedElements: observed.length,
         observedActions: observed.slice(0, 40),
         rawFindingsByPillar: rawByPillar,

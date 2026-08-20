@@ -17,18 +17,24 @@ Default mode is **mock** (`UX_EVALUATION_MODE=mock`): jobs complete with sample 
 
 In `live` mode, `runUxEvaluation()` performs:
 
-1. **Navigate** to the target URL at the configured viewport.
-2. **Full-page screenshot** → uploaded to MinIO as `runs/<runId>/full-page.png`, recorded on `EvaluationRun.screenshotKey`.
-3. **`observe()`** the interactable elements. These are real, resolvable selectors, and they double as the fallback when a model-proposed selector turns out not to exist.
-4. **`extract()` once per heuristic pillar**, each against a strict Zod schema:
+1. **Stealth launch** — Chromium args + UA/`Accept-Language` headers + webdriver mask (or Browserbase `advancedStealth` when `STAGEHAND_ENV=BROWSERBASE`).
+2. **Navigate** to the target URL at the configured viewport (default 1920×1080).
+3. **Pre-flight cleanup** (deterministic, before any AI call):
+   - soft `networkidle` wait (default 15s, never fails the run)
+   - incremental scroll to mount lazy content, then scroll back to top
+   - fast CSS-selector cookie/popup clicks (500ms budget each)
+   - scoped Stagehand `act()` only if a large overlay still covers the viewport
+4. **Full-page screenshot** → uploaded to MinIO as `runs/<runId>/full-page.png`, recorded on `EvaluationRun.screenshotKey`.
+5. **`observe()`** the interactable elements. These are real, resolvable selectors, and they double as the fallback when a model-proposed selector turns out not to exist.
+6. **`extract()` once per heuristic pillar**, each against a strict Zod schema:
    | Pillar | Looks for |
    |--------|-----------|
    | Accessibility | missing alt text and labels, low contrast, divs acting as buttons, heading order |
    | Cognitive Load | cluttered navigation, competing primary CTAs, vague copy, undifferentiated text walls |
    | Friction | dead ends, unvalidated form fields, over-long forms, layout shift, hidden costs |
-5. **Resolve selectors.** A selector the model proposes is only trusted after it verifies against the live DOM; otherwise the model's element description is matched against the `observe()` results.
-6. **Element crops.** High and medium findings with a resolved selector get a padded crop uploaded to MinIO, capped by `UX_MAX_ELEMENT_SCREENSHOTS`.
-7. **Score and summarize**, then persist everything in one Prisma transaction.
+7. **Resolve selectors.** A selector the model proposes is only trusted after it verifies against the live DOM; otherwise the model's element description is matched against the `observe()` results.
+8. **Element crops.** High and medium findings with a resolved selector get a padded crop uploaded to MinIO, capped by `UX_MAX_ELEMENT_SCREENSHOTS`.
+9. **Score and summarize**, then persist everything in one Prisma transaction.
 
 A failed pillar or crop is logged and skipped — a partial audit beats none. Navigation and browser failures propagate so the run is marked `FAILED` with the error recorded on `EvaluationRun.error`.
 
@@ -56,6 +62,8 @@ OPENAI_API_KEY=...
 ```
 
 Audit tuning: `UX_VIEWPORT_WIDTH`, `UX_VIEWPORT_HEIGHT`, `UX_NAV_TIMEOUT_MS`, `UX_EXTRACT_TIMEOUT_MS`, `UX_MAX_ELEMENT_SCREENSHOTS`.
+
+Stealth / pre-flight: `UX_USER_AGENT`, `UX_ACCEPT_LANGUAGE`, `STAGEHAND_CACHE_DIR`, `UX_NETWORK_IDLE_TIMEOUT_MS`, `UX_PREFLIGHT_CLICK_TIMEOUT_MS`, `UX_PREFLIGHT_SCROLL_PAUSE_MS`, `UX_PREFLIGHT_MAX_SCROLL_MS`, `UX_PREFLIGHT_AI_FALLBACK`, `UX_PREFLIGHT_AI_TIMEOUT_MS`.
 
 ## Local live runs without an LLM account (`dev/`)
 
