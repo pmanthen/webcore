@@ -9,6 +9,7 @@ Full-stack TypeScript SaaS for automated UX feedback. Clients onboard a web proj
 | `apps/web` | Next.js (App Router) — UI, auth, onboarding, API, job enqueue |
 | `apps/worker` | Node.js worker — BullMQ consumer, Playwright + Stagehand evaluation |
 | `packages/database` | Shared Prisma schema, client, and domain TypeScript types |
+| `infra/` | Terraform AWS foundation (VPC + ECS/Fargate placeholders) |
 | PostgreSQL | Primary data store (Prisma) |
 | Redis | BullMQ job queue |
 
@@ -136,7 +137,18 @@ Default `UX_EVALUATION_MODE=mock` completes jobs with sample `UxIssue[]` (no bro
 2. **Step 2 (done):** Prisma schema + shared types (`packages/database`)
 3. **Step 3 (done):** Next.js dashboard, onboard form, `/api/evaluate`
 4. **Step 4 (done):** BullMQ worker + Stagehand UX evaluation skeleton
-5. **Step 5:** Terraform AWS foundation (`infra/`)
+5. **Step 5 (done):** Terraform AWS foundation (`infra/`)
+
+## AWS / Terraform (Step 5)
+
+```bash
+cd infra
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan
+```
+
+See [`infra/README.md`](infra/README.md) for module layout and Phase 2 follow-ons (ECR, ALB, RDS, ElastiCache).
 
 ## License
 

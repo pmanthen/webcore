@@ -1,0 +1,14 @@
+# Example variable values for local/staging foundation applies.
+# Copy to terraform.tfvars (gitignored) and adjust.
+
+aws_region   = "us-east-1"
+project_name = "ux-eval"
+environment  = "staging"
+
+vpc_cidr           = "10.20.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]
+enable_nat_gateway = false
+
+# Keep at 0 until real ECR images replace the busybox placeholders.
+web_desired_count    = 0
+worker_desired_count = 0
