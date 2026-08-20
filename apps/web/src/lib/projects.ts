@@ -12,8 +12,15 @@ export type ProjectListItem = Pick<
   _count: { runs: number; evaluations: number };
 };
 
-export async function listProjects(): Promise<ProjectListItem[]> {
+/**
+ * List projects owned by the given tenant. Callers must pass
+ * `session.user.clientId` — never trust a client-supplied tenant id.
+ */
+export async function listProjects(
+  clientId: string,
+): Promise<ProjectListItem[]> {
   return prisma.project.findMany({
+    where: { clientId },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,

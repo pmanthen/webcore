@@ -51,14 +51,16 @@ export interface ProjectResultsView {
 
 /**
  * Load a project's latest audit (or a specific run) with its findings.
- * Returns `null` when the project does not exist, so the page can render 404.
+ * Returns `null` when the project does not exist **for this tenant**, so
+ * callers cannot IDOR across `clientId` boundaries.
  */
 export async function getProjectResults(
   projectId: string,
+  clientId: string,
   runId?: string,
 ): Promise<ProjectResultsView | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, clientId },
     select: {
       id: true,
       name: true,

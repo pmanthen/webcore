@@ -1,11 +1,12 @@
 import type { EvaluationRunStatus } from "@autonomous-ux/database";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { FullPagePreview } from "@/components/results/FullPagePreview";
 import { ScoreGauge } from "@/components/results/ScoreGauge";
 import { TriageBoard } from "@/components/results/TriageBoard";
 import { SEVERITY_TONE } from "@/components/results/severity";
+import { auth } from "@/auth";
 import { getProjectResults } from "@/lib/results";
 
 export const dynamic = "force-dynamic";
@@ -35,10 +36,16 @@ export default async function ProjectResultsPage({
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ run?: string }>;
 }) {
+  const session = await auth();
+  const clientId = session?.user?.clientId;
+  if (!session?.user || !clientId) {
+    redirect("/api/auth/signin");
+  }
+
   const { projectId } = await params;
   const { run: requestedRunId } = await searchParams;
 
-  const results = await getProjectResults(projectId, requestedRunId);
+  const results = await getProjectResults(projectId, clientId, requestedRunId);
   if (!results) {
     notFound();
   }

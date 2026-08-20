@@ -7,7 +7,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getEnv } from "@/lib/env";
+import { auth } from "@/auth";
 import { getEvaluationQueue } from "@/lib/queue";
 
 export const runtime = "nodejs";
@@ -60,6 +60,12 @@ async function markEnqueueFailed(
 }
 
 export async function POST(request: Request) {
+  const session = await auth();
+  const clientId = session?.user?.clientId;
+  if (!session?.user || !clientId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let json: unknown;
   try {
     json = await request.json();
@@ -76,25 +82,15 @@ export async function POST(request: Request) {
   }
 
   const { url, name } = parsed.data;
-  const env = getEnv();
 
   let projectId: string | undefined;
   let runId: string | undefined;
 
   try {
-    const client = await prisma.client.upsert({
-      where: { email: env.DEMO_CLIENT_EMAIL },
-      update: { name: env.DEMO_CLIENT_NAME },
-      create: {
-        email: env.DEMO_CLIENT_EMAIL,
-        name: env.DEMO_CLIENT_NAME,
-      },
-    });
-
     const result = await prisma.$transaction(async (tx) => {
       const project = await tx.project.create({
         data: {
-          clientId: client.id,
+          clientId,
           url,
           name: deriveProjectName(url, name),
           status: "QUEUED",
@@ -123,7 +119,7 @@ export async function POST(request: Request) {
       projectId: result.project.id,
       runId: result.run.id,
       url: result.project.url,
-      clientId: client.id,
+      clientId,
     };
 
     try {

@@ -29,6 +29,7 @@
     "db:format": "prisma format"
   },
   "dependencies": {
+    "@auth/prisma-adapter": "^2.11.3",
     "@prisma/client": "^6.5.0"
   },
   "devDependencies": {

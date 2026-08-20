@@ -18,6 +18,9 @@ export default defineConfig({
     env: {
       DATABASE_URL: "postgresql://test:test@localhost:5432/test?schema=public",
       REDIS_URL: "redis://localhost:6379",
+      AUTH_SECRET: "test-auth-secret",
+      AUTH_GITHUB_ID: "test-github-id",
+      AUTH_GITHUB_SECRET: "test-github-secret",
     },
   },
 });

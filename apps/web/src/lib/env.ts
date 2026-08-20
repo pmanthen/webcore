@@ -6,11 +6,19 @@ const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
+
   /**
-   * Demo tenant used until auth lands. Projects are attached to this client.
+   * Auth.js secret used to sign JWTs / cookies. Required in production;
+   * a deterministic default keeps local/CI boots working without secrets.
    */
-  DEMO_CLIENT_EMAIL: z.string().email().default("demo@uxeval.local"),
-  DEMO_CLIENT_NAME: z.string().min(1).default("Demo Client"),
+  AUTH_SECRET: z
+    .string()
+    .min(1)
+    .default("dev-only-auth-secret-change-me"),
+
+  /** GitHub OAuth app credentials — optional so unit tests can import modules. */
+  AUTH_GITHUB_ID: z.string().optional(),
+  AUTH_GITHUB_SECRET: z.string().optional(),
 
   // MinIO / S3-compatible object storage, read by the artifact proxy route.
   MINIO_ENDPOINT: z.string().min(1).default("localhost"),
@@ -37,8 +45,9 @@ export function getEnv(): WebEnv {
     DATABASE_URL: process.env.DATABASE_URL,
     REDIS_URL: process.env.REDIS_URL,
     NODE_ENV: process.env.NODE_ENV,
-    DEMO_CLIENT_EMAIL: process.env.DEMO_CLIENT_EMAIL,
-    DEMO_CLIENT_NAME: process.env.DEMO_CLIENT_NAME,
+    AUTH_SECRET: process.env.AUTH_SECRET,
+    AUTH_GITHUB_ID: process.env.AUTH_GITHUB_ID,
+    AUTH_GITHUB_SECRET: process.env.AUTH_GITHUB_SECRET,
     MINIO_ENDPOINT: process.env.MINIO_ENDPOINT,
     MINIO_PORT: process.env.MINIO_PORT,
     MINIO_USE_SSL: process.env.MINIO_USE_SSL,

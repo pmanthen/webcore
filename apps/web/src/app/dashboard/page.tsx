@@ -1,16 +1,24 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { ProjectList } from "@/components/ProjectList";
+import { auth } from "@/auth";
 import { listProjects } from "@/lib/projects";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
+  const session = await auth();
+  const clientId = session?.user?.clientId;
+  if (!session?.user || !clientId) {
+    redirect("/api/auth/signin?callbackUrl=/dashboard");
+  }
+
   let projects: Awaited<ReturnType<typeof listProjects>> = [];
   let loadError: string | null = null;
 
   try {
-    projects = await listProjects();
+    projects = await listProjects(clientId);
   } catch (error) {
     console.error("[dashboard] failed to load projects", error);
     loadError =
