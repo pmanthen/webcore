@@ -8,5 +8,8 @@
     "build": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 1",
     "lint": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 0",
     "typecheck": "echo \"Worker not scaffolded yet — complete Step 4\" && exit 0"
+  },
+  "dependencies": {
+    "@autonomous-ux/database": "*"
   }
 }

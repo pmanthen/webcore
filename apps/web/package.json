@@ -8,5 +8,8 @@
     "build": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 1",
     "lint": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 0",
     "typecheck": "echo \"Web app not scaffolded yet — complete Step 3\" && exit 0"
+  },
+  "dependencies": {
+    "@autonomous-ux/database": "*"
   }
 }
