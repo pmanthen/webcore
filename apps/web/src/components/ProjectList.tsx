@@ -75,6 +75,14 @@ export function ProjectList({ projects }: { projects: ProjectListItem[] }) {
                   }`
                 : ""}
             </span>
+            {project._count.runs > 0 ? (
+              <Link
+                href={`/projects/${project.id}/results`}
+                className="rounded-md px-2 py-1 text-sm font-medium text-[color:var(--accent)] transition hover:bg-[color:var(--accent-soft)]"
+              >
+                Results
+              </Link>
+            ) : null}
           </div>
         </li>
       ))}
