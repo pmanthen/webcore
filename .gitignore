@@ -60,3 +60,6 @@ infra/terraform.tfvars
 *.war
 *.ear
 hs_err_pid*
+
+# Stagehand act() selector cache
+.stagehand-cache/
